@@ -50,6 +50,30 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Decisão:** cada lançamento grava `walletVersion` (a versão da wallet depois dele). A abertura com saldo gera o lançamento da versão 1; cada movimento seguinte, versão + 1.
 - **Motivo:** permite uma constraint `UNIQUE(wallet_id, wallet_version)`: dois movimentos calculados a partir do mesmo estado (lost update) são barrados pelo banco.
 
+### D10 — Garantias no schema (não só no código)
+- **Contexto:** o desafio exige que unicidade, imutabilidade e não-negatividade sejam aplicadas pelo banco.
+- **Decisão:** cada invariante tem uma constraint ou trigger correspondente, coberta por teste de integração em `test/integration/schema.test.ts`:
+
+| Invariante | Onde no schema |
+|---|---|
+| Uma wallet por player + moeda | `UNIQUE (player_id, currency)` |
+| Saldo nunca negativo | `CHECK (balance >= 0)` em `wallets` e nos saldos do ledger |
+| Toda mudança de saldo tem lançamento (e vice-versa) | constraint trigger **adiada para o COMMIT** `wallets_assert_ledger`: saldo inicial exige lançamento de abertura; mudança de saldo exige versão + 1 e o lançamento daquela versão com `antes`/`depois` iguais |
+| Sem lost update | `UNIQUE (wallet_id, wallet_version)` no ledger |
+| Aritmética do lançamento | `CHECK` de `antes ± valor = depois` |
+| Moeda do lançamento = moeda da wallet | FK composta `(wallet_id, currency) → wallets (id, currency)` |
+| No máximo 1 lançamento por transação por wallet | `UNIQUE (transaction_id, wallet_id)` |
+| Ledger imutável | triggers bloqueiam `UPDATE`, `DELETE` e `TRUNCATE` |
+| Idempotência persistente, isolada por provedor | `UNIQUE (provider_id, idempotency_key)` e `UNIQUE (provider_id, external_transaction_id)`: a key de um provedor nunca colide com a de outro |
+| REFUND/ROLLBACK com referência | `CHECK` por kind |
+| Reversão única por referência | índice único parcial em `reference_transaction_id` para reversões `PROCESSED` |
+| Estado terminal é definitivo; campos de negócio imutáveis; nada é apagado | trigger `wager_transactions_guard` |
+| Rejeição/falha sempre com código | `CHECK` de consistência `status` ↔ `failure_code` |
+| Inbox deduplicada | chave primária `(consumer_name, message_id)` |
+
+- **Trade-off:** o trigger adiado custa uma consulta indexada por wallet alterada no commit. Em troca, nenhum caminho de escrita (bug, script manual, outra aplicação) consegue mudar saldo sem deixar rastro no ledger.
+- **Consequência para testes:** para simular uma divergência na reconciliação, o teste precisa desligar explicitamente os triggers (`session_replication_role = replica`), o que deixa claro que a adulteração não acontece por acidente.
+
 ## Máquina de estados de `WagerTransaction`
 
 ```
