@@ -19,6 +19,15 @@ afterAll(async () => {
   await db?.drop();
 });
 
+/** Como um cliente real: reenvia enquanto a resposta for 503 (falha transitória). */
+async function untilNotTransient<T extends { status: number }>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await call();
+    if (res.status !== 503 || attempt >= 10) return res;
+    await Bun.sleep(100);
+  }
+}
+
 /** Trava a wallet numa conexão à parte (como uma transação lenta) até `release()`. */
 async function holdWalletLock(walletId: string) {
   const conn = await db.sql.reserve();
@@ -110,6 +119,7 @@ describe("PostgreSQL fora do ar", () => {
     const client = api(app.baseUrl);
     const wallet = (await client.createWallet("100.00")).body;
     const bet = wagerPayload(wallet, "BET", "10.00");
+    await Promise.all(Array.from({ length: 4 }, () => client.get(`/wallets/${wallet.id}`))); // várias conexões no pool
 
     proxy.stop();
     const post = await client.submit(bet);
@@ -125,10 +135,10 @@ describe("PostgreSQL fora do ar", () => {
     expect(live.status).toBe(200); // o processo está vivo: não deve ser reiniciado
 
     proxy.start();
-    const retried = await client.submit(bet);
+    const retried = await untilNotTransient(() => client.submit(bet));
     expect(retried.status).toBe(200);
     expect(retried.body.balance.amount).toBe("90.00");
-    expect((await client.get("/health/ready")).status).toBe(200);
+    expect((await untilNotTransient(() => client.get("/health/ready"))).status).toBe(200);
   });
 
   test("a queda não vaza conexões do pool (regressão: kysely 0.29.6 não devolvia a conexão se o BEGIN falhasse)", async () => {
@@ -137,7 +147,10 @@ describe("PostgreSQL fora do ar", () => {
       totalCount: number;
       idleCount: number;
     };
-    const wallet = (await client.createWallet("100.00")).body;
+    // A conexão reaproveitada do teste anterior pode estar morta: o primeiro uso responde 503.
+    const created = await untilNotTransient(() => client.createWallet("100.00"));
+    expect(created.status).toBe(201);
+    const wallet = created.body;
     // Várias conexões ociosas abertas, todas "mortas" sem aviso quando o banco cai.
     await Promise.all(Array.from({ length: 5 }, () => client.get(`/wallets/${wallet.id}`)));
 
@@ -146,7 +159,7 @@ describe("PostgreSQL fora do ar", () => {
     expect(failed.map((r) => r.status)).toEqual([503, 503, 503, 503, 503]);
     proxy.start();
 
-    expect((await client.submit(wagerPayload(wallet, "BET", "1.00"))).status).toBe(200);
+    expect((await untilNotTransient(() => client.submit(wagerPayload(wallet, "BET", "1.00")))).status).toBe(200);
     // Toda conexão emprestada voltou ao pool: nenhuma ficou presa numa transação que nunca começou.
     expect(pool.totalCount).toBe(pool.idleCount);
   });
