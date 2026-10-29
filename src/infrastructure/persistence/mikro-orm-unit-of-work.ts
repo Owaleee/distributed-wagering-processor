@@ -4,11 +4,12 @@ import { InboxMessage } from "../../domain/messaging/inbox-message";
 import type { OutboxMessage } from "../../domain/messaging/outbox-message";
 import type { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import type { Wallet } from "../../domain/wallet/wallet";
-import type { RetrySchedule, TransactionalStore, UnitOfWork } from "../../application/ports";
+import type { LockedPending, RetrySchedule, TransactionalStore, UnitOfWork } from "../../application/ports";
 import { translateDbError } from "./db-errors";
 import { InboxRecord, LedgerEntryRecord, OutboxRecord, WagerTransactionRecord, WalletRecord } from "./entities";
 import {
   ledgerEntryToRecordData,
+  transactionStateData,
   transactionFromRecord,
   transactionToRecordData,
   walletFromRecord,
@@ -71,6 +72,42 @@ export class MikroOrmStore implements TransactionalStore {
     return this.track(await this.em.findOne(WagerTransactionRecord, { providerId, externalTransactionId }));
   }
 
+  async lockDuePendingReferences(now: Date, limit: number): Promise<LockedPending[]> {
+    const records = await this.em.find(
+      WagerTransactionRecord,
+      { status: "PENDING_REFERENCE", nextAttemptAt: { $lte: now } },
+      { orderBy: { nextAttemptAt: "asc" }, limit, lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE },
+    );
+    return records.map((r) => this.locked(r));
+  }
+
+  async lockPendingReference(transactionId: string): Promise<LockedPending | undefined> {
+    const record = await this.em.findOne(
+      WagerTransactionRecord,
+      { id: transactionId, status: "PENDING_REFERENCE" },
+      { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE, refresh: true },
+    );
+    return record === null ? undefined : this.locked(record);
+  }
+
+  /**
+   * SQL direto: um único `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)`. Pelo ORM seriam
+   * uma leitura com lock e N updates; aqui é um comando só, que pula as linhas que um worker já travou.
+   */
+  async wakePendingReferences(providerId: string, referenceExternalTransactionId: string, now: Date): Promise<number> {
+    const rows = await this.em.execute<{ id: string }[]>(
+      `update wager_transactions set next_attempt_at = ?, updated_at = ?
+        where id in (
+          select id from wager_transactions
+           where status = 'PENDING_REFERENCE' and provider_id = ? and reference_external_transaction_id = ?
+             and next_attempt_at > ?
+           for update skip locked)
+        returning id`,
+      [now, now, providerId, referenceExternalTransactionId, now],
+    );
+    return rows.length;
+  }
+
   async hasProcessedReversal(referenceTransactionId: string): Promise<boolean> {
     const count = await this.em.count(WagerTransactionRecord, {
       referenceTransactionId,
@@ -95,10 +132,23 @@ export class MikroOrmStore implements TransactionalStore {
     const record = this.em.create(WagerTransactionRecord, {
       ...transactionToRecordData(transaction, now),
       attempts: schedule?.attempts ?? 0,
+      processingFailures: schedule?.processingFailures ?? 0,
       nextAttemptAt: schedule?.nextAttemptAt ?? null,
     });
     this.em.persist(record);
     this.transactions.set(record.id, record);
+  }
+
+  updateTransaction(transaction: WagerTransaction, now: Date, schedule?: RetrySchedule): void {
+    const record = this.transactions.get(transaction.id);
+    if (record === undefined) throw new Error(`transação ${transaction.id} não foi lida nesta transação`);
+    this.em.assign(record, {
+      ...transactionStateData(transaction),
+      attempts: schedule?.attempts ?? record.attempts,
+      processingFailures: schedule?.processingFailures ?? record.processingFailures,
+      nextAttemptAt: transaction.isTerminal() ? null : (schedule?.nextAttemptAt ?? record.nextAttemptAt),
+      updatedAt: now,
+    });
   }
 
   insertLedgerEntry(entry: WalletLedgerEntry): void {
@@ -145,6 +195,14 @@ export class MikroOrmStore implements TransactionalStore {
       receivedAt: record.receivedAt,
       processedAt: record.processedAt ?? undefined,
     });
+  }
+
+  private locked(record: WagerTransactionRecord): LockedPending {
+    return {
+      transaction: this.track(record) as WagerTransaction,
+      attempts: record.attempts,
+      processingFailures: record.processingFailures,
+    };
   }
 
   private track(record: WagerTransactionRecord | null): WagerTransaction | undefined {

@@ -45,6 +45,7 @@ export const WagerTransactionRecord = defineEntity({
     observedCurrency: p.string().nullable(),
     processedAt: p.datetime().nullable(),
     attempts: p.integer(),
+    processingFailures: p.integer(),
     nextAttemptAt: p.datetime().nullable(),
     createdAt: p.datetime(),
     updatedAt: p.datetime(),

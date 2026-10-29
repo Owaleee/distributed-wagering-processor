@@ -7,8 +7,23 @@ export interface AppConfig {
   /** Espera máxima por uma conexão livre do pool (ms) antes de responder falha transitória. */
   readonly dbConnectTimeoutMs: number;
   readonly pendingReference: {
-    /** Primeira reavaliação de uma PENDING_REFERENCE; as seguintes dobram (backoff exponencial). */
+    readonly enabled: boolean;
+    readonly pollIntervalMs: number;
+    /**
+     * Primeira reavaliação de uma PENDING_REFERENCE, em ms após a chegada; as seguintes dobram.
+     * Com 2 s e 8 tentativas, a janela total de espera é 2 + 4 + … + 256 s = 510 s (~8,5 min).
+     */
     readonly baseDelayMs: number;
+    /** Reavaliações à espera da referência antes de rejeitar (REFERENCE_NOT_FOUND / REFERENCE_STILL_PENDING). */
+    readonly maxAttempts: number;
+    /** Falhas de infraestrutura seguidas ao reavaliar antes de marcar FAILED. */
+    readonly maxProcessingFailures: number;
+    readonly batchSize: number;
+  };
+  readonly outbox: {
+    readonly enabled: boolean;
+    readonly pollIntervalMs: number;
+    readonly batchSize: number;
   };
   readonly sqs: {
     readonly endpoint: string;
@@ -68,7 +83,17 @@ export function loadConfig(): AppConfig {
     lockTimeoutMs: intFromEnv("LOCK_TIMEOUT_MS", 5_000),
     dbConnectTimeoutMs: intFromEnv("DB_CONNECT_TIMEOUT_MS", 5_000),
     pendingReference: {
+      enabled: boolFromEnv("PENDING_REFERENCE_WORKER_ENABLED", true),
+      pollIntervalMs: intFromEnv("PENDING_REFERENCE_POLL_INTERVAL_MS", 1_000),
       baseDelayMs: intFromEnv("PENDING_REFERENCE_BASE_DELAY_MS", 2_000, 0),
+      maxAttempts: intFromEnv("PENDING_REFERENCE_MAX_ATTEMPTS", 8),
+      maxProcessingFailures: intFromEnv("PENDING_REFERENCE_MAX_PROCESSING_FAILURES", 5),
+      batchSize: intFromEnv("PENDING_REFERENCE_BATCH_SIZE", 10),
+    },
+    outbox: {
+      enabled: boolFromEnv("OUTBOX_PUBLISHER_ENABLED", true),
+      pollIntervalMs: intFromEnv("OUTBOX_POLL_INTERVAL_MS", 500),
+      batchSize: intFromEnv("OUTBOX_BATCH_SIZE", 10),
     },
     sqs: {
       endpoint: process.env.SQS_ENDPOINT ?? "http://localhost:4566",

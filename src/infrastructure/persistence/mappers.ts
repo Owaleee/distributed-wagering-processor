@@ -92,6 +92,7 @@ export function transactionToRecordData(t: WagerTransaction, now: Date): WagerTr
     referenceExternalTransactionId: t.referenceExternalTransactionId ?? null,
     ...transactionStateData(t),
     attempts: 0,
+    processingFailures: 0,
     nextAttemptAt: null,
     createdAt: t.createdAt,
     updatedAt: now,

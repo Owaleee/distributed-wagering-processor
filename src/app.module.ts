@@ -12,7 +12,10 @@ import type { AppConfig } from "./infrastructure/config";
 import { BackgroundWorkers, type Startable } from "./infrastructure/messaging/messaging.lifecycle";
 import { type QueueUrls, resolveQueues } from "./infrastructure/messaging/queue-setup";
 import { createSqsClient } from "./infrastructure/messaging/sqs-client";
+import { SqsEventPublisher } from "./infrastructure/messaging/sqs-event-publisher";
 import { WagerConsumer } from "./infrastructure/messaging/wager-consumer";
+import { OutboxRelay } from "./infrastructure/workers/outbox-relay";
+import { PendingReferenceWorker } from "./infrastructure/workers/pending-reference-worker";
 import { JsonLogger } from "./infrastructure/observability/json-logger";
 import { PromMetrics } from "./infrastructure/observability/prom-metrics";
 import { buildOrmConfig } from "./infrastructure/persistence/mikro-orm.config";
@@ -33,6 +36,8 @@ export const SQS_CLIENT = Symbol("SQS_CLIENT");
 export const QUEUE_URLS = Symbol("QUEUE_URLS");
 export const WAGER_CONSUMER = Symbol("WAGER_CONSUMER");
 export const WORKERS = Symbol("WORKERS");
+export const OUTBOX_RELAY = Symbol("OUTBOX_RELAY");
+export const PENDING_REFERENCE_WORKER = Symbol("PENDING_REFERENCE_WORKER");
 
 /**
  * Composição da aplicação: aqui as portas da camada de aplicação recebem as implementações
@@ -126,18 +131,33 @@ export class AppModule implements NestModule {
             ),
         },
         {
+          provide: OUTBOX_RELAY,
+          inject: [MikroORM, SQS_CLIENT, QUEUE_URLS, CLOCK, LOGGER, METRICS],
+          useFactory: (orm: MikroORM, sqs: SQSClient, queues: QueueUrls, clock: Clock, logger: Logger, metrics: PromMetrics) =>
+            new OutboxRelay(orm, new SqsEventPublisher(sqs, queues.eventsQueueUrl), clock, logger, metrics, config.outbox),
+        },
+        {
+          provide: PENDING_REFERENCE_WORKER,
+          inject: [UNIT_OF_WORK, PROCESS_WAGER, CLOCK, ID_GENERATOR, LOGGER, METRICS],
+          useFactory: (
+            uow: UnitOfWork, processWager: ProcessWagerTransaction, clock: Clock, ids: IdGenerator, logger: Logger, metrics: PromMetrics,
+          ) => new PendingReferenceWorker(uow, processWager, clock, ids, logger, metrics, config.pendingReference),
+        },
+        {
           provide: WORKERS,
-          inject: [WAGER_CONSUMER, LOGGER],
-          useFactory: (consumer: WagerConsumer, logger: Logger) => {
+          inject: [WAGER_CONSUMER, OUTBOX_RELAY, PENDING_REFERENCE_WORKER, LOGGER],
+          useFactory: (consumer: WagerConsumer, relay: OutboxRelay, pending: PendingReferenceWorker, logger: Logger) => {
             const workers: Startable[] = [];
             if (config.consumer.enabled) workers.push(consumer);
+            if (config.pendingReference.enabled) workers.push(pending);
+            if (config.outbox.enabled) workers.push(relay);
             return new BackgroundWorkers(workers, logger);
           },
         },
         ProviderAuthGuard,
         { provide: APP_FILTER, useClass: HttpErrorsFilter },
       ],
-      exports: [LOGGER, METRICS, PROM_METRICS, CLOCK, ID_GENERATOR, UNIT_OF_WORK, PROCESS_WAGER, APP_CONFIG, SQS_CLIENT, QUEUE_URLS, WAGER_CONSUMER],
+      exports: [LOGGER, METRICS, PROM_METRICS, CLOCK, ID_GENERATOR, UNIT_OF_WORK, PROCESS_WAGER, APP_CONFIG, SQS_CLIENT, QUEUE_URLS, WAGER_CONSUMER, OUTBOX_RELAY, PENDING_REFERENCE_WORKER],
     };
   }
 

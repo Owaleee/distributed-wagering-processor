@@ -12,8 +12,10 @@ export enum FailureCode {
   CurrencyMismatch = "CURRENCY_MISMATCH",
   /** playerId da operação não é o dono da wallet. */
   PlayerWalletMismatch = "PLAYER_WALLET_MISMATCH",
-  /** A referência não apareceu dentro do limite de tentativas/TTL. */
+  /** A referência não apareceu dentro da janela de espera. */
   ReferenceNotFound = "REFERENCE_NOT_FOUND",
+  /** A referência existe, mas ela mesma continuou pendente até o fim da janela de espera. */
+  ReferenceStillPending = "REFERENCE_STILL_PENDING",
   /** Tipo de referência não permitido (REFUND só referencia BET; ROLLBACK: BET, WIN ou REFUND). */
   ReferenceInvalidKind = "REFERENCE_INVALID_KIND",
   /** A referência existe, mas terminou REJECTED ou FAILED: não há o que reverter. */

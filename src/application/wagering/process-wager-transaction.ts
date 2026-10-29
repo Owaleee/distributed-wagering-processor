@@ -85,7 +85,9 @@ export class ProcessWagerTransaction {
   async execute(command: SubmitWagerCommand, trace: TraceContext): Promise<WagerResult> {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.uow.run((store) => this.executeIn(store, command, trace));
+        const result = await this.uow.run((store) => this.executeIn(store, command, trace));
+        if (!result.idempotentReplay) await this.wakeDependents(result, command.providerId, command.externalTransactionId);
+        return result;
       } catch (error) {
         if (!(error instanceof UniqueConflictError)) throw error;
         this.metrics?.lockConflict("unique_conflict");
@@ -139,6 +141,67 @@ export class ProcessWagerTransaction {
       store.enqueue(OutboxMessage.enqueue(event));
     }
     return toResult(transaction, false);
+  }
+
+  /**
+   * Depois do COMMIT de uma transação que chegou a um estado final, acorda as pendências que
+   * esperavam por ela (ex.: o ROLLBACK que chegou antes da BET), para o worker reavaliá-las já,
+   * sem esperar o backoff. Vale para PROCESSED e também para REJECTED/FAILED: uma dependente de
+   * uma referência rejeitada deve ser rejeitada logo (REFERENCE_NOT_PROCESSED), não no fim da janela.
+   * Roda numa transação própria e sem o lock da wallet (evita deadlock com o worker).
+   * É só otimização: se falhar, o worker as encontra no horário agendado.
+   */
+  async wakeDependents(result: Pick<WagerResult, "status">, providerId: string, externalTransactionId: string): Promise<number> {
+    if (!TERMINAL_STATUSES.has(result.status)) return 0;
+    try {
+      return await this.uow.run((store) => store.wakePendingReferences(providerId, externalTransactionId, this.clock.now()));
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Reavalia uma transação PENDING_REFERENCE (chamado pelo worker), com as mesmas regras e o mesmo
+   * lock de wallet da entrada original. Devolve o novo status.
+   * Esgotada a janela de espera: referência ausente → REFERENCE_NOT_FOUND; referência presente mas
+   * ainda pendente → REFERENCE_STILL_PENDING (o problema está nela, não na falta dela).
+   */
+  async retryPending(
+    store: TransactionalStore,
+    transaction: WagerTransaction,
+    options: { exhausted: boolean; nextSchedule: RetrySchedule; trace: TraceContext },
+  ): Promise<WagerTransactionStatus> {
+    const wallet = await store.lockWallet(transaction.walletId);
+    if (wallet === undefined) throw new WalletNotFoundError(transaction.walletId);
+    const now = this.clock.now();
+
+    const reference = await store.findTransactionByExternalId(
+      transaction.providerId,
+      transaction.referenceExternalTransactionId ?? "",
+    );
+    const referenceAlreadyReversed =
+      reference !== undefined && transaction.requiresReference() ? await store.hasProcessedReversal(reference.id) : false;
+    const ctx = { transaction, wallet, reference, referenceAlreadyReversed };
+    let decision = decideWager(ctx);
+
+    if (decision.outcome === "pending") {
+      if (!options.exhausted) {
+        store.updateTransaction(transaction, now, options.nextSchedule);
+        return transaction.status;
+      }
+      const code = reference === undefined ? FailureCode.ReferenceNotFound : FailureCode.ReferenceStillPending;
+      decision = { outcome: "reject", code, reference: undefined };
+    }
+    const entry = applyWagerDecision(ctx, decision, { ledgerEntryId: this.ids.next(), now });
+    store.updateTransaction(transaction, now, options.nextSchedule);
+    if (entry !== undefined) {
+      store.insertLedgerEntry(entry);
+      store.updateWallet(wallet);
+    }
+    for (const event of this.eventsFor(decision, transaction, wallet, entry, options.trace, now)) {
+      store.enqueue(OutboxMessage.enqueue(event));
+    }
+    return transaction.status;
   }
 
   /**
@@ -200,6 +263,12 @@ export class ProcessWagerTransaction {
     }
   }
 }
+
+const TERMINAL_STATUSES = new Set<WagerTransactionStatus>([
+  WagerTransactionStatus.Processed,
+  WagerTransactionStatus.Rejected,
+  WagerTransactionStatus.Failed,
+]);
 
 export function toResult(tx: WagerTransaction, idempotentReplay: boolean): WagerResult {
   return {

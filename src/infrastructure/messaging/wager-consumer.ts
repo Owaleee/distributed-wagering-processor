@@ -264,6 +264,7 @@ export class WagerConsumer {
       if (result === "duplicate") {
         this.logger.info("mensagem duplicada ignorada (inbox)", fields);
       } else {
+        if (!result.idempotentReplay) await this.processWager.wakeDependents(result, data.providerId, data.externalTransactionId);
         this.logger.info("transação processada via SQS", {
           ...fields, transactionId: result.transactionId, status: result.status,
           failureCode: result.failureCode, idempotentReplay: result.idempotentReplay,

@@ -30,6 +30,7 @@ export interface TestConfigOverrides {
   lockTimeoutMs?: number;
   dbConnectTimeoutMs?: number;
   pendingReference?: Partial<AppConfig["pendingReference"]>;
+  outbox?: Partial<AppConfig["outbox"]>;
 }
 
 /** Configuração de teste: filas exclusivas, consumidor desligado por padrão (cada teste controla o seu) e tempos curtos. */
@@ -41,7 +42,11 @@ export function testConfig(databaseUrl: string, overrides: TestConfigOverrides =
     port: 0,
     lockTimeoutMs: overrides.lockTimeoutMs ?? base.lockTimeoutMs,
     dbConnectTimeoutMs: overrides.dbConnectTimeoutMs ?? base.dbConnectTimeoutMs,
-    pendingReference: { ...base.pendingReference, ...overrides.pendingReference },
+    pendingReference: {
+      ...base.pendingReference, enabled: false, pollIntervalMs: 100, baseDelayMs: 0, maxAttempts: 3, maxProcessingFailures: 3,
+      ...overrides.pendingReference,
+    },
+    outbox: { ...base.outbox, enabled: false, pollIntervalMs: 100, ...overrides.outbox },
     sqs: { ...base.sqs, ...testQueueNames(), maxReceiveCount: 3, visibilityTimeoutSeconds: 2, ...overrides.sqs },
     consumer: {
       ...base.consumer,

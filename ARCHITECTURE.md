@@ -144,6 +144,27 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Readiness:** `/health/ready` confere o PostgreSQL e as três filas (entrada, DLQ, eventos). A aplicação só **localiza** as filas no boot (D5); se faltar alguma, o boot falha com erro claro.
 - **Evidência:** `test/integration/sqs-consumer.test.ts` (processamento, redelivery, replay por idempotency key, rejeição de negócio, DLQ direta, retry transitório, DLQ por redrive e a métrica, ordem FIFO após retry, SIGTERM, timeout do stop, ciclo de vida) e `test/integration/consumer-crash.test.ts`: um processo real (`bun src/main.ts`) se mata com SIGKILL entre o COMMIT e o ack (`FAULT_CRASH_AFTER_COMMIT`, injeção de falha só para teste), outra instância recebe a redelivery, e o débito acontece uma única vez.
 
+### D18 — Transactional Outbox
+- **Gravação:** os eventos são inseridos em `outbox_messages` na **mesma transação SQL** do efeito financeiro. Nenhum evento é publicado antes do commit, porque quem publica é outro processo, que só enxerga linhas confirmadas.
+- **Publicação:** o `OutboxRelay` roda em todas as instâncias. Cada rodada trava um lote com `FOR UPDATE SKIP LOCKED`, publica em `wallet-events.fifo` (`SendMessageBatch`) e marca `published_at` no mesmo COMMIT. Com SKIP LOCKED, publishers concorrentes pegam lotes disjuntos; isso é verificado em teste.
+- **Crash depois de publicar e antes do commit:** o lock some com a conexão, a linha continua pendente e outra instância publica de novo. A entrega é **at-least-once**: `MessageDeduplicationId = eventId` descarta a cópia em até 5 min no FIFO, e fora dessa janela o consumidor deduplica pelo `eventId` do envelope.
+- **Falha no SQS:** `OutboxMessage.scheduleRetry` (backoff exponencial de 1 s a 5 min), `attempts` e `last_error` gravados. O evento nunca é descartado.
+- **Ordem dos eventos:** não há ordem global garantida, porque vários publishers rodam em paralelo e um lote que falhou volta depois. Os eventos de saldo (`WalletBalanceChanged`) usam `MessageGroupId = walletId` e carregam `walletVersion`, que cresce de 1 em 1 por wallet. **O consumidor deve ordenar e deduplicar por `walletVersion`** (ignorar versões já vistas, esperar as que faltam), em vez de confiar na ordem de chegada. Os eventos de transação usam o `transactionId` como grupo.
+- **SQL direto no relay:** a seleção precisa de `ORDER BY … LIMIT … FOR UPDATE SKIP LOCKED` numa tabela técnica, sem regra de domínio para hidratar; o estado de cada evento continua decidido pelo `OutboxMessage`.
+- **Métrica `outbox_lag_seconds`:** idade do evento pendente mais antigo, atualizada a cada rodada.
+- **Trade-off:** a transação do relay fica aberta durante a chamada ao SQS (lotes pequenos, 10 por padrão). Uma alternativa sem transação longa seria um *lease* (`locked_until`), com mais complexidade e o mesmo resultado at-least-once.
+- **Evidência:** `test/integration/outbox-and-pending.test.ts` (envelope, publishers concorrentes sem sobreposição, crash entre publicar e marcar, SQS indisponível com backoff, ciclo de vida na aplicação).
+
+### D19 — Referências fora de ordem
+- Uma transação cuja referência ainda não existe é gravada como `PENDING_REFERENCE` (HTTP 202, evento `WagerTransactionPendingReference`), com a primeira reavaliação em `PENDING_REFERENCE_BASE_DELAY_MS` (2 s).
+- O `PendingReferenceWorker` reavalia uma pendência por transação: `FOR UPDATE SKIP LOCKED` na linha da pendência (dois workers nunca pegam a mesma) e depois o **mesmo lock de wallet e as mesmas regras** do fluxo normal (`retryPending`).
+- **Backoff e janela:** a 1ª reavaliação ocorre 2 s após a chegada e cada uma das seguintes dobra o intervalo. Com 8 tentativas, a janela total é **2 + 4 + … + 256 s = 510 s (~8,5 min)**. Escolhi assim porque provedores costumam reenviar a operação original em segundos ou minutos; depois disso, a ausência indica erro do provedor, não atraso. Os valores são configuráveis (`PENDING_REFERENCE_MAX_ATTEMPTS`, `PENDING_REFERENCE_BASE_DELAY_MS`).
+- **Janela esgotada:** referência ausente → `REJECTED` / `REFERENCE_NOT_FOUND`; referência presente mas ainda pendente → `REJECTED` / `REFERENCE_STILL_PENDING`. São problemas diferentes: no primeiro falta a operação original; no segundo ela chegou, mas também ficou presa. Ambos geram `WagerTransactionRejected`.
+- **Acordar as dependentes:** depois do COMMIT de uma transação que chegou a um **estado final** (`PROCESSED`, `REJECTED` ou `FAILED`; via HTTP, fila ou o próprio worker), o caso de uso antecipa para "agora" o `next_attempt_at` das pendências que esperavam por ela. Incluir os finais negativos evita que uma dependente de uma referência rejeitada espere a janela inteira para receber `REFERENCE_NOT_PROCESSED`. Roda numa transação separada e **sem o lock da wallet** (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)`): dentro da transação original causaria deadlock com o worker, que trava a pendência antes da wallet. É só otimização: se falhar, o horário agendado continua valendo. A migration `Migration20261029190000PendingReferenceWorker` cria o índice parcial dessa busca.
+- **`FAILED`:** se a reavaliação falhar por erro de infraestrutura (a transação do worker é desfeita), a falha é contada numa transação nova, em `processing_failures`, **separado** de `attempts` (tentativas de achar a referência). Uma reavaliação que termina zera a sequência. Depois de `PENDING_REFERENCE_MAX_PROCESSING_FAILURES` (5) falhas seguidas, a pendência vira **`FAILED` / `PROCESSING_FAILED`**, terminal e auditável, com o evento extra `WagerTransactionFailed`, em vez de tentar para sempre. Por HTTP, um replay dela responde 500 (D13).
+- **Ordem de locks sem deadlock:** o worker trava a pendência e depois a wallet. O fluxo HTTP/SQS trava a wallet e só **lê** pendências, sem travá-las. Não há ciclo.
+- **Evidência:** `test/integration/outbox-and-pending.test.ts` (ROLLBACK antes da BET e o replay 202 → 200, referência que nunca chega, referência ainda pendente, dois workers em paralelo, acordar ao PROCESSED e ao REJECTED, FAILED com contadores separados).
+
 ## Máquina de estados de `WagerTransaction`
 
 ```
@@ -160,14 +181,15 @@ PROCESSED, REJECTED, FAILED: terminais (qualquer transição lança InvalidTrans
 | `REVERSAL_INSUFFICIENT_FUNDS` | REJECTED | ROLLBACK de WIN/REFUND deixaria saldo negativo | Não reenviar; tratar manualmente |
 | `CURRENCY_MISMATCH` | REJECTED | Moeda diferente da wallet | Corrigir o payload |
 | `PLAYER_WALLET_MISMATCH` | REJECTED | playerId não é o dono da wallet | Corrigir o payload |
-| `REFERENCE_NOT_FOUND` | REJECTED | Referência não chegou dentro do limite | Investigar; reenviar com nova chave se a referência existir |
+| `REFERENCE_NOT_FOUND` | REJECTED | Referência não chegou dentro da janela de espera (~8,5 min) | Investigar; reenviar com nova chave se a referência existir |
+| `REFERENCE_STILL_PENDING` | REJECTED | A referência chegou, mas ela mesma ficou pendente até o fim da janela | Resolver primeiro a referência; depois reenviar com nova chave |
 | `REFERENCE_INVALID_KIND` | REJECTED | Tipo de referência não permitido | Corrigir o payload |
 | `REFERENCE_NOT_PROCESSED` | REJECTED | Referência terminou REJECTED/FAILED | Não reenviar |
 | `REFERENCE_MISMATCH` | REJECTED | Referência de outro player/wallet/moeda/rodada/provider | Corrigir o payload |
 | `AMOUNT_MISMATCH` | REJECTED | Valor da reversão ≠ valor da referência | Corrigir o payload |
 | `ALREADY_REVERSED` | REJECTED | A referência já foi revertida (inclusive WIN de uma BET revertida) | Não reenviar |
 | `BALANCE_LIMIT_EXCEEDED` | REJECTED | O crédito passaria do maior saldo armazenável (18 dígitos inteiros) | Não reenviar; tratar manualmente |
-| `PROCESSING_FAILED` | FAILED | Falha permanente de infraestrutura com a transação já gravada (ver D18) | Contatar o operador |
+| `PROCESSING_FAILED` | FAILED | Falha permanente de infraestrutura com a transação já gravada (ver D19) | Contatar o operador |
 
 A ordem das verificações define qual código vence quando há mais de um problema: moeda → player → referência (ausente, não processada, escopo, tipo, valor, já revertida) → limite de saldo → saldo.
 
