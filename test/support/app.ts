@@ -3,6 +3,8 @@ import type { INestApplication } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "../../src/app.module";
 import { type AppConfig, loadConfig } from "../../src/infrastructure/config";
+import { ensureQueues } from "../../src/infrastructure/messaging/queue-setup";
+import { createSqsClient } from "../../src/infrastructure/messaging/sqs-client";
 
 process.env.LOG_LEVEL ??= "silent";
 
@@ -12,13 +14,25 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
+/** Filas com nome único por suíte: uma suíte nunca consome mensagens de outra. */
+export function testQueueNames(): Pick<AppConfig["sqs"], "wagerQueueName" | "wagerDlqName" | "eventsQueueName"> {
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  return {
+    wagerQueueName: `wager-transactions-${suffix}.fifo`,
+    wagerDlqName: `wager-transactions-dlq-${suffix}.fifo`,
+    eventsQueueName: `wallet-events-${suffix}.fifo`,
+  };
+}
+
 export interface TestConfigOverrides {
+  sqs?: Partial<AppConfig["sqs"]>;
+  consumer?: Partial<AppConfig["consumer"]>;
   lockTimeoutMs?: number;
   dbConnectTimeoutMs?: number;
   pendingReference?: Partial<AppConfig["pendingReference"]>;
 }
 
-/** Configuração de teste: a padrão, numa porta livre e apontando para o banco de teste. */
+/** Configuração de teste: filas exclusivas, consumidor desligado por padrão (cada teste controla o seu) e tempos curtos. */
 export function testConfig(databaseUrl: string, overrides: TestConfigOverrides = {}): AppConfig {
   const base = loadConfig();
   return {
@@ -28,12 +42,24 @@ export function testConfig(databaseUrl: string, overrides: TestConfigOverrides =
     lockTimeoutMs: overrides.lockTimeoutMs ?? base.lockTimeoutMs,
     dbConnectTimeoutMs: overrides.dbConnectTimeoutMs ?? base.dbConnectTimeoutMs,
     pendingReference: { ...base.pendingReference, ...overrides.pendingReference },
+    sqs: { ...base.sqs, ...testQueueNames(), maxReceiveCount: 3, visibilityTimeoutSeconds: 2, ...overrides.sqs },
+    consumer: {
+      ...base.consumer,
+      enabled: false,
+      waitTimeSeconds: 1,
+      retryBaseSeconds: 0,
+      retryMaxSeconds: 0,
+      shutdownTimeoutMs: 5_000,
+      dlqPollIntervalMs: 200,
+      ...overrides.consumer,
+    },
   };
 }
 
 /** Sobe a aplicação real (Nest + MikroORM) numa porta livre, apontando para o banco de teste. */
 export async function startTestApp(databaseUrl: string, overrides: TestConfigOverrides | AppConfig = {}): Promise<TestApp> {
   const config: AppConfig = "databaseUrl" in overrides ? overrides : testConfig(databaseUrl, overrides);
+  await ensureQueues(createSqsClient(config), config); // o papel do `setup`: a aplicação só localiza as filas
   const app = await NestFactory.create(AppModule.forRoot(config), { logger: false });
   await app.listen(0);
   const address = app.getHttpServer().address() as { port: number };

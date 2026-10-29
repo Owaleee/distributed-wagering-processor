@@ -312,6 +312,6 @@ describe("health", () => {
     expect((await client.get("/health/live")).body).toEqual({ status: "ok" });
     const ready = await client.get("/health/ready");
     expect(ready.status).toBe(200);
-    expect(ready.body.checks).toEqual({ postgres: "up" });
+    expect(ready.body.checks).toEqual({ postgres: "up", sqs_wager_queue: "up", sqs_wager_dlq: "up", sqs_events_queue: "up" });
   });
 });

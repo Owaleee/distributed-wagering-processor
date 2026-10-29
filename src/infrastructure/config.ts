@@ -22,6 +22,27 @@ export interface AppConfig {
     readonly maxReceiveCount: number;
     readonly visibilityTimeoutSeconds: number;
   };
+  readonly consumer: {
+    readonly enabled: boolean;
+    /** Nome do consumidor na inbox: (consumer_name, message_id) é a chave de deduplicação. */
+    readonly name: string;
+    /** Long polling: quanto tempo cada ReceiveMessage espera por mensagens. */
+    readonly waitTimeSeconds: number;
+    /** Backoff de erro transitório: base · 2^(tentativa−1), limitado a max. */
+    readonly retryBaseSeconds: number;
+    readonly retryMaxSeconds: number;
+    /** Tempo máximo para terminar a mensagem em andamento no SIGTERM. */
+    readonly shutdownTimeoutMs: number;
+    /** A cada quanto tempo a profundidade da DLQ é lida para a métrica. */
+    readonly dlqPollIntervalMs: number;
+  };
+  /**
+   * Injeção de falha, só para testes: o processo se mata (SIGKILL) logo depois do COMMIT de uma
+   * mensagem e antes do ack. Prova, com um processo real, que a redelivery não duplica o efeito.
+   */
+  readonly faultInjection: {
+    readonly crashAfterCommit: boolean;
+  };
 }
 
 export function intFromEnv(name: string, fallback: number, min = 1): number {
@@ -59,6 +80,18 @@ export function loadConfig(): AppConfig {
       eventsQueueName: process.env.EVENTS_QUEUE_NAME ?? "wallet-events.fifo",
       maxReceiveCount: intFromEnv("WAGER_MAX_RECEIVE_COUNT", 5),
       visibilityTimeoutSeconds: intFromEnv("WAGER_VISIBILITY_TIMEOUT_SECONDS", 30),
+    },
+    consumer: {
+      enabled: boolFromEnv("CONSUMER_ENABLED", true),
+      name: process.env.CONSUMER_NAME ?? "wager-transactions-consumer",
+      waitTimeSeconds: intFromEnv("CONSUMER_WAIT_TIME_SECONDS", 5, 0),
+      retryBaseSeconds: intFromEnv("CONSUMER_RETRY_BASE_SECONDS", 2, 0),
+      retryMaxSeconds: intFromEnv("CONSUMER_RETRY_MAX_SECONDS", 60, 0),
+      shutdownTimeoutMs: intFromEnv("CONSUMER_SHUTDOWN_TIMEOUT_MS", 20_000),
+      dlqPollIntervalMs: intFromEnv("CONSUMER_DLQ_POLL_INTERVAL_MS", 15_000),
+    },
+    faultInjection: {
+      crashAfterCommit: boolFromEnv("FAULT_CRASH_AFTER_COMMIT", false),
     },
   };
 }

@@ -24,8 +24,13 @@ export interface Metrics {
   duplicateDetected(kind: "idempotency_replay" | "inbox"): void;
   /** Nova tentativa (mensagem SQS, publicação da outbox, referência pendente). */
   retry(kind: "sqs" | "outbox" | "pending_reference"): void;
-  /** Mensagem enviada para a DLQ. */
+  /** Mensagem enviada para a DLQ pelo consumidor (erro permanente). */
   sentToDlq(reason: string): void;
+  /**
+   * Mensagens hoje na DLQ, inclusive as movidas pelo redrive do próprio SQS (que o código não vê).
+   * É este número que um alerta deve observar.
+   */
+  dlqDepth(messages: number): void;
   /** Conflito de concorrência: lock demorou, unicidade concorrente. */
   lockConflict(kind: "lock_timeout" | "unique_conflict"): void;
   /** Idade (s) do evento mais antigo ainda não publicado. */

@@ -1,11 +1,12 @@
 import { LockMode, type EntityManager, type MikroORM } from "@mikro-orm/postgresql";
 import type { WalletLedgerEntry } from "../../domain/ledger/wallet-ledger-entry";
+import { InboxMessage } from "../../domain/messaging/inbox-message";
 import type { OutboxMessage } from "../../domain/messaging/outbox-message";
 import type { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import type { Wallet } from "../../domain/wallet/wallet";
 import type { RetrySchedule, TransactionalStore, UnitOfWork } from "../../application/ports";
 import { translateDbError } from "./db-errors";
-import { LedgerEntryRecord, OutboxRecord, WagerTransactionRecord, WalletRecord } from "./entities";
+import { InboxRecord, LedgerEntryRecord, OutboxRecord, WagerTransactionRecord, WalletRecord } from "./entities";
 import {
   ledgerEntryToRecordData,
   transactionFromRecord,
@@ -118,6 +119,32 @@ export class MikroOrmStore implements TransactionalStore {
         lastError: null,
       }),
     );
+  }
+
+  /**
+   * `INSERT … ON CONFLICT DO NOTHING` em SQL direto: se outra instância estiver gravando a mesma
+   * mensagem, esta espera o commit dela e então não insere nada — sem exceção de unicidade
+   * abortando a transação. O ORM não expressa "insira se não existir" num único comando.
+   */
+  async registerInbox(message: InboxMessage): Promise<boolean> {
+    const rows = await this.em.execute<{ message_id: string }[]>(
+      `insert into inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+       values (?, ?, ?, ?, ?) on conflict (consumer_name, message_id) do nothing returning message_id`,
+      [message.consumerName, message.messageId, message.payloadHash, message.receivedAt, message.processedAt ?? null],
+    );
+    return rows.length === 1;
+  }
+
+  async findInbox(consumerName: string, messageId: string): Promise<InboxMessage | undefined> {
+    const record = await this.em.findOne(InboxRecord, { consumerName, messageId });
+    if (record === null) return undefined;
+    return InboxMessage.rehydrate({
+      consumerName: record.consumerName,
+      messageId: record.messageId,
+      payloadHash: record.payloadHash,
+      receivedAt: record.receivedAt,
+      processedAt: record.processedAt ?? undefined,
+    });
   }
 
   private track(record: WagerTransactionRecord | null): WagerTransaction | undefined {

@@ -2,12 +2,17 @@ import { type DynamicModule, type MiddlewareConsumer, Module, type NestModule } 
 import { APP_FILTER } from "@nestjs/core";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { MikroOrmModule } from "@mikro-orm/nestjs";
+import { GetQueueAttributesCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { CLOCK, type Clock, ID_GENERATOR, type IdGenerator, UNIT_OF_WORK, type UnitOfWork } from "./application/ports";
 import { LOGGER, type Logger, METRICS } from "./application/observability";
 import { ProcessWagerTransaction } from "./application/wagering/process-wager-transaction";
 import { CreateWallet } from "./application/wallets/create-wallet";
 import { ReconcileWallet } from "./application/wallets/reconcile-wallet";
 import type { AppConfig } from "./infrastructure/config";
+import { BackgroundWorkers, type Startable } from "./infrastructure/messaging/messaging.lifecycle";
+import { type QueueUrls, resolveQueues } from "./infrastructure/messaging/queue-setup";
+import { createSqsClient } from "./infrastructure/messaging/sqs-client";
+import { WagerConsumer } from "./infrastructure/messaging/wager-consumer";
 import { JsonLogger } from "./infrastructure/observability/json-logger";
 import { PromMetrics } from "./infrastructure/observability/prom-metrics";
 import { buildOrmConfig } from "./infrastructure/persistence/mikro-orm.config";
@@ -24,6 +29,10 @@ import { WageringController } from "./interface/http/wagering.controller";
 import { WalletsController } from "./interface/http/wallets.controller";
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
+export const SQS_CLIENT = Symbol("SQS_CLIENT");
+export const QUEUE_URLS = Symbol("QUEUE_URLS");
+export const WAGER_CONSUMER = Symbol("WAGER_CONSUMER");
+export const WORKERS = Symbol("WORKERS");
 
 /**
  * Composição da aplicação: aqui as portas da camada de aplicação recebem as implementações
@@ -71,17 +80,64 @@ export class AppModule implements NestModule {
           inject: [READ_MODEL, LOGGER, METRICS],
           useFactory: (rm: ReadModel, logger: Logger, metrics: PromMetrics) => new ReconcileWallet(rm, logger, metrics),
         },
+        { provide: SQS_CLIENT, useFactory: () => createSqsClient(config) },
+        {
+          // Só localiza as filas criadas pelo `setup` (D5): a aplicação nunca cria nem altera filas.
+          provide: QUEUE_URLS,
+          inject: [SQS_CLIENT],
+          useFactory: (sqs: SQSClient) => resolveQueues(sqs, config),
+        },
         {
           provide: READINESS_CHECKS,
-          inject: [MikroORM],
-          useFactory: (orm: MikroORM): ReadinessCheck[] => [
-            { name: "postgres", check: async () => void (await orm.em.fork().getConnection().execute("select 1")) },
-          ],
+          inject: [MikroORM, SQS_CLIENT, QUEUE_URLS],
+          useFactory: (orm: MikroORM, sqs: SQSClient, queues: QueueUrls): ReadinessCheck[] => {
+            const queue = (url: string) => async () =>
+              void (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: url, AttributeNames: ["QueueArn"] })));
+            return [
+              { name: "postgres", check: async () => void (await orm.em.fork().getConnection().execute("select 1")) },
+              { name: "sqs_wager_queue", check: queue(queues.wagerQueueUrl) },
+              { name: "sqs_wager_dlq", check: queue(queues.wagerDlqUrl) },
+              { name: "sqs_events_queue", check: queue(queues.eventsQueueUrl) },
+            ];
+          },
+        },
+        {
+          provide: WAGER_CONSUMER,
+          inject: [SQS_CLIENT, UNIT_OF_WORK, PROCESS_WAGER, CLOCK, LOGGER, METRICS, QUEUE_URLS],
+          useFactory: (
+            sqs: SQSClient, uow: UnitOfWork, processWager: ProcessWagerTransaction, clock: Clock,
+            logger: Logger, metrics: PromMetrics, queues: QueueUrls,
+          ) =>
+            new WagerConsumer(
+              sqs, uow, processWager, clock, logger, metrics,
+              {
+                queueUrl: queues.wagerQueueUrl,
+                dlqUrl: queues.wagerDlqUrl,
+                consumerName: config.consumer.name,
+                maxReceiveCount: config.sqs.maxReceiveCount,
+                waitTimeSeconds: config.consumer.waitTimeSeconds,
+                retryBaseSeconds: config.consumer.retryBaseSeconds,
+                retryMaxSeconds: config.consumer.retryMaxSeconds,
+                shutdownTimeoutMs: config.consumer.shutdownTimeoutMs,
+                dlqPollIntervalMs: config.consumer.dlqPollIntervalMs,
+              },
+              // Só em teste (FAULT_CRASH_AFTER_COMMIT): morre de verdade entre o COMMIT e o ack.
+              config.faultInjection.crashAfterCommit ? { afterCommit: async () => void process.kill(process.pid, "SIGKILL") } : {},
+            ),
+        },
+        {
+          provide: WORKERS,
+          inject: [WAGER_CONSUMER, LOGGER],
+          useFactory: (consumer: WagerConsumer, logger: Logger) => {
+            const workers: Startable[] = [];
+            if (config.consumer.enabled) workers.push(consumer);
+            return new BackgroundWorkers(workers, logger);
+          },
         },
         ProviderAuthGuard,
         { provide: APP_FILTER, useClass: HttpErrorsFilter },
       ],
-      exports: [LOGGER, METRICS, PROM_METRICS, CLOCK, ID_GENERATOR, UNIT_OF_WORK, PROCESS_WAGER, APP_CONFIG],
+      exports: [LOGGER, METRICS, PROM_METRICS, CLOCK, ID_GENERATOR, UNIT_OF_WORK, PROCESS_WAGER, APP_CONFIG, SQS_CLIENT, QUEUE_URLS, WAGER_CONSUMER],
     };
   }
 

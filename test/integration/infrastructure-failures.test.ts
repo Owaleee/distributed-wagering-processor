@@ -131,7 +131,7 @@ describe("PostgreSQL fora do ar", () => {
     expect(post.body.error.code).toBe("TRANSIENT_FAILURE");
     expect(get.status).toBe(503);
     expect(ready.status).toBe(503);
-    expect(ready.body.checks).toEqual({ postgres: "down" });
+    expect(ready.body.checks).toMatchObject({ postgres: "down", sqs_wager_queue: "up" });
     expect(live.status).toBe(200); // o processo está vivo: não deve ser reiniciado
 
     proxy.start();

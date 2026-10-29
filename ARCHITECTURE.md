@@ -123,6 +123,27 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Dependência corrigida — `kysely` fixado em 0.29.7 (`overrides` no `package.json`).** O MikroORM 7.2.5 exige o kysely 0.29.6, que tem um vazamento: se o `BEGIN` falha (conexão morta reaproveitada do pool depois de uma queda do banco), a conexão nunca é devolvida. O teste de queda reproduz: com a 0.29.6, 6 de 7 conexões ficam presas depois de uma única queda e a aplicação trava ao desligar; com a 0.29.7, que corrige exatamente esse caminho, nenhuma. Em produção, oscilações repetidas esgotariam o pool. Quando o MikroORM passar a depender da versão corrigida, o `overrides` pode sair.
 - **Evidência:** `test/integration/infrastructure-failures.test.ts` (lock timeout, pool esgotado, banco fora e vazamento de conexão, este com um proxy TCP que derruba o banco sem avisar a aplicação).
 
+### D17 — Consumidor SQS
+- **Mesmo caso de uso:** o consumidor chama `ProcessWagerTransaction.executeIn` dentro de uma transação que, antes, grava a inbox (`InboxMessage` do domínio) com `INSERT … ON CONFLICT DO NOTHING`. O registro da inbox e o efeito financeiro entram juntos no COMMIT, ou nenhum entra. A inbox é gravada por SQL direto porque o ORM não expressa "insira se não existir" num único comando sem abortar a transação.
+- **Ack só depois do commit:** `DeleteMessage` acontece após a transação confirmar. Se o processo morrer entre os dois, a mensagem volta depois do visibility timeout e a inbox reconhece a redelivery: confirma sem reaplicar.
+- **Duas camadas de deduplicação:** a inbox deduplica pelo `messageId` (a mesma mensagem entregue de novo). A idempotência do caso de uso deduplica pela `(providerId, idempotencyKey)` (a mesma operação em mensagens diferentes, ou também enviada por HTTP).
+- **Classificação de erros:**
+
+| Tipo | Exemplos | Ação |
+|---|---|---|
+| Negócio | saldo insuficiente, referência inválida | transação `REJECTED` gravada → **ack** |
+| Transitório | banco indisponível, lock timeout, pool esgotado, unicidade concorrente | **sem ack**; `ChangeMessageVisibility` com backoff `base · 2^(tentativa−1)` |
+| Permanente | JSON inválido, schema inválido, `OPENING`, `providerId` reservado, wallet inexistente, conflito de idempotência | cópia para a **DLQ** com `failureReason`, depois ack |
+| Inesperado | bug | tratado como transitório; o **redrive** (`maxReceiveCount`, padrão 5) leva à DLQ se persistir |
+
+- **Limite de tentativas garantido pelo broker:** mesmo que o processo caia em todas as tentativas, a `RedrivePolicy` move a mensagem para a DLQ após `maxReceiveCount` recebimentos.
+- **Ordem por wallet:** `MessageGroupId = walletId`. O lote é processado em sequência; se uma mensagem volta para a fila (retry), **as seguintes do mesmo grupo no lote são devolvidas sem processar**. O SQS só as entrega de novo depois da que falhou, e a ordem da wallet é preservada. Mensagens que vão para a DLQ não bloqueiam o grupo: são removidas da fila principal. A correção financeira não depende dessa ordem (vem do lock e das constraints), mas ela evita, por exemplo, que um WIN passe na frente da BET e vire `PENDING_REFERENCE` sem necessidade.
+- **DLQ observável:** a métrica `wager_dlq_depth` lê a profundidade real da DLQ (`ApproximateNumberOfMessages`) a cada `CONSUMER_DLQ_POLL_INTERVAL_MS`. Ela inclui o que o redrive do SQS moveu, que o código nunca vê. É ela que um alerta deve observar; `wager_dlq_messages_total{reason}` conta só os envios feitos pelo consumidor.
+- **SIGTERM:** o consumidor para de buscar, termina a mensagem em andamento e devolve com visibilidade 0 as recebidas e não iniciadas. O long polling em curso **não é abortado**: um `ReceiveMessage` cancelado no cliente ainda pode ter recebido mensagens no servidor, que ficariam invisíveis e gastariam uma tentativa (observado nos testes do protótipo). O `CONSUMER_SHUTDOWN_TIMEOUT_MS` limita a espera de verdade: se estourar, o processo segue o encerramento e a mensagem sem ack volta depois, sem duplicar efeito.
+- **`messageId` repetido com conteúdo diferente:** mantém o primeiro processamento e registra um warning (o hash do envelope fica na inbox).
+- **Readiness:** `/health/ready` confere o PostgreSQL e as três filas (entrada, DLQ, eventos). A aplicação só **localiza** as filas no boot (D5); se faltar alguma, o boot falha com erro claro.
+- **Evidência:** `test/integration/sqs-consumer.test.ts` (processamento, redelivery, replay por idempotency key, rejeição de negócio, DLQ direta, retry transitório, DLQ por redrive e a métrica, ordem FIFO após retry, SIGTERM, timeout do stop, ciclo de vida) e `test/integration/consumer-crash.test.ts`: um processo real (`bun src/main.ts`) se mata com SIGKILL entre o COMMIT e o ack (`FAULT_CRASH_AFTER_COMMIT`, injeção de falha só para teste), outra instância recebe a redelivery, e o débito acontece uma única vez.
+
 ## Máquina de estados de `WagerTransaction`
 
 ```

@@ -1,4 +1,5 @@
 import type { WalletLedgerEntry } from "../domain/ledger/wallet-ledger-entry";
+import type { InboxMessage } from "../domain/messaging/inbox-message";
 import type { OutboxMessage } from "../domain/messaging/outbox-message";
 import type { WagerTransaction } from "../domain/wagering/wager-transaction";
 import type { Wallet } from "../domain/wallet/wallet";
@@ -41,6 +42,13 @@ export interface TransactionalStore {
   insertTransaction(transaction: WagerTransaction, schedule?: RetrySchedule): void;
   insertLedgerEntry(entry: WalletLedgerEntry): void;
   enqueue(message: OutboxMessage): void;
+
+  /**
+   * Grava a mensagem recebida na inbox, na mesma transação do efeito financeiro.
+   * Devolve `false` se (consumerName, messageId) já existia (redelivery): o efeito não deve ser reaplicado.
+   */
+  registerInbox(message: InboxMessage): Promise<boolean>;
+  findInbox(consumerName: string, messageId: string): Promise<InboxMessage | undefined>;
 }
 
 export interface UnitOfWork {

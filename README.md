@@ -45,6 +45,16 @@ curl -s localhost:3001/wagering/transactions -H 'content-type: application/json'
 ```
 Valores sempre como string com 2 casas (`"25.00"`). Status de resposta e códigos de falha: [`ARCHITECTURE.md`](./ARCHITECTURE.md#d13--mapeamento-http).
 
+### Pela fila SQS
+A fila `wager-transactions.fifo` recebe o mesmo comando, no envelope `WagerTransactionRequested`:
+```json
+{ "messageId": "msg-1", "type": "WagerTransactionRequested", "occurredAt": "2026-10-29T12:00:00Z",
+  "data": { "providerId": "provider-a", "externalTransactionId": "bet-2", "idempotencyKey": "provider-a:bet-2",
+            "playerId": "…", "walletId": "…", "roundId": "round-1", "gameId": "fortune-chimp",
+            "kind": "BET", "money": { "amount": "10.00", "currency": "BRL" } } }
+```
+Use `MessageGroupId = walletId`. Rejeições de negócio são confirmadas (a transação fica `REJECTED`); erros temporários voltam para a fila com backoff; mensagens inválidas vão para a DLQ `wager-transactions-dlq.fifo` com o motivo em `failureReason`.
+
 ## Desenvolvimento
 ```bash
 bun install

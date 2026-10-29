@@ -1,4 +1,4 @@
-import { CreateQueueCommand, GetQueueAttributesCommand, type SQSClient } from "@aws-sdk/client-sqs";
+import { CreateQueueCommand, GetQueueAttributesCommand, GetQueueUrlCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import type { AppConfig } from "../config";
 
 export interface QueueUrls {
@@ -39,6 +39,21 @@ export async function ensureQueues(sqs: SQSClient, config: AppConfig): Promise<Q
     wagerDlqUrl,
     eventsQueueUrl: required(events.QueueUrl, config.sqs.eventsQueueName),
   };
+}
+
+/**
+ * Localiza as filas que o `setup` criou, sem criá-las. A aplicação só usa o que já existe:
+ * se uma fila faltar, o boot falha com erro claro em vez de criar uma fila com atributos errados.
+ */
+export async function resolveQueues(sqs: SQSClient, config: AppConfig): Promise<QueueUrls> {
+  const url = async (name: string) =>
+    required((await sqs.send(new GetQueueUrlCommand({ QueueName: name }))).QueueUrl, name);
+  const [wagerQueueUrl, wagerDlqUrl, eventsQueueUrl] = await Promise.all([
+    url(config.sqs.wagerQueueName),
+    url(config.sqs.wagerDlqName),
+    url(config.sqs.eventsQueueName),
+  ]);
+  return { wagerQueueUrl, wagerDlqUrl, eventsQueueUrl };
 }
 
 function required(value: string | undefined, what: string): string {

@@ -19,6 +19,9 @@ export class PromMetrics implements Metrics {
   private readonly dlq = new Counter({
     name: "wager_dlq_messages_total", help: "Mensagens enviadas para a DLQ", labelNames: ["reason"], registers: [this.registry],
   });
+  private readonly dlqDepthGauge = new Gauge({
+    name: "wager_dlq_depth", help: "Mensagens na DLQ agora (inclui as movidas pelo redrive do SQS)", registers: [this.registry],
+  });
   private readonly lockConflicts = new Counter({
     name: "wager_lock_conflicts_total", help: "Conflitos de concorrência (lock timeout, unicidade concorrente)",
     labelNames: ["kind"], registers: [this.registry],
@@ -55,6 +58,9 @@ export class PromMetrics implements Metrics {
   }
   sentToDlq(reason: string): void {
     this.dlq.inc({ reason });
+  }
+  dlqDepth(messages: number): void {
+    this.dlqDepthGauge.set(messages);
   }
   lockConflict(kind: "lock_timeout" | "unique_conflict"): void {
     this.lockConflicts.inc({ kind });
