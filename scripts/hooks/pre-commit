@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Roda antes de cada `git commit` (ative com: bun run hooks:install).
+# Só o que é rápido e não precisa de Docker; integração e concorrência rodam no CI.
+set -e
+echo "pre-commit: typecheck + testes de unidade"
+bun run --silent typecheck
+bun test test/unit
