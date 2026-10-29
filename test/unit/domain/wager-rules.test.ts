@@ -36,6 +36,11 @@ describe("WagerTransaction — criação", () => {
     expect(wager(K.Bet, "1.00").status).toBe(S.Pending);
   });
 
+  test("providerId \"internal\" é reservado: nenhuma entrada externa pode usá-lo", () => {
+    expect(() => wager(K.Bet, "1.00", { providerId: "internal" })).toThrow(InvalidWagerTransactionError);
+    expect(() => wager(K.Bet, "1.00", { providerId: "Internal" })).not.toThrow();
+  });
+
   test("OPENING não pode ser submetido externamente", () => {
     expect(() => wager(K.Opening, "1.00")).toThrow(InvalidWagerTransactionError);
   });

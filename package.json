@@ -30,5 +30,8 @@
     "test:concurrency": "bun test test/concurrency",
     "typecheck": "tsc --noEmit -p .",
     "hooks:install": "git config core.hooksPath scripts/hooks"
+  },
+  "overrides": {
+    "kysely": "0.29.7"
   }
 }

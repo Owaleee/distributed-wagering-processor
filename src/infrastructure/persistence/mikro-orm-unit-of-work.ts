@@ -1,0 +1,130 @@
+import { LockMode, type EntityManager, type MikroORM } from "@mikro-orm/postgresql";
+import type { WalletLedgerEntry } from "../../domain/ledger/wallet-ledger-entry";
+import type { OutboxMessage } from "../../domain/messaging/outbox-message";
+import type { WagerTransaction } from "../../domain/wagering/wager-transaction";
+import type { Wallet } from "../../domain/wallet/wallet";
+import type { RetrySchedule, TransactionalStore, UnitOfWork } from "../../application/ports";
+import { translateDbError } from "./db-errors";
+import { LedgerEntryRecord, OutboxRecord, WagerTransactionRecord, WalletRecord } from "./entities";
+import {
+  ledgerEntryToRecordData,
+  transactionFromRecord,
+  transactionToRecordData,
+  walletFromRecord,
+  walletToRecordData,
+} from "./mappers";
+
+export interface UnitOfWorkOptions {
+  /** Quanto tempo esperar por um lock de linha antes de desistir (falha transitória → 503/retry). */
+  lockTimeoutMs: number;
+}
+
+/**
+ * Unit of Work sobre MikroORM: cada `run` abre um EntityManager próprio (fork) e uma transação
+ * SQL (`em.transactional`). Entidades lidas ficam no Identity Map; as alterações são gravadas
+ * no flush do commit. As FKs são `DEFERRABLE INITIALLY DEFERRED`, então a ordem dos INSERTs
+ * gerada pelo flush não importa: tudo é validado no COMMIT.
+ */
+export class MikroOrmUnitOfWork implements UnitOfWork {
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly options: UnitOfWorkOptions,
+  ) {}
+
+  async run<T>(work: (store: TransactionalStore) => Promise<T>): Promise<T> {
+    try {
+      return await this.orm.em.fork().transactional(async (em) => {
+        await em.execute(`set local lock_timeout = ${Math.trunc(this.options.lockTimeoutMs)}`);
+        return work(new MikroOrmStore(em));
+      });
+    } catch (error) {
+      throw translateDbError(error);
+    }
+  }
+}
+
+export class MikroOrmStore implements TransactionalStore {
+  private readonly wallets = new Map<string, WalletRecord>();
+  private readonly transactions = new Map<string, WagerTransactionRecord>();
+
+  constructor(readonly em: EntityManager) {}
+
+  async lockWallet(walletId: string): Promise<Wallet | undefined> {
+    if (!UUID.test(walletId)) return undefined;
+    const record = await this.em.findOne(WalletRecord, { id: walletId }, { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
+    if (record === null) return undefined;
+    this.wallets.set(record.id, record);
+    return walletFromRecord(record);
+  }
+
+  async findWalletByPlayer(playerId: string, currency: string): Promise<Wallet | undefined> {
+    const record = await this.em.findOne(WalletRecord, { playerId, currency });
+    return record === null ? undefined : walletFromRecord(record);
+  }
+
+  async findTransactionByIdempotencyKey(providerId: string, key: string): Promise<WagerTransaction | undefined> {
+    return this.track(await this.em.findOne(WagerTransactionRecord, { providerId, idempotencyKey: key }));
+  }
+
+  async findTransactionByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined> {
+    return this.track(await this.em.findOne(WagerTransactionRecord, { providerId, externalTransactionId }));
+  }
+
+  async hasProcessedReversal(referenceTransactionId: string): Promise<boolean> {
+    const count = await this.em.count(WagerTransactionRecord, {
+      referenceTransactionId,
+      kind: { $in: ["REFUND", "ROLLBACK"] },
+      status: "PROCESSED",
+    });
+    return count > 0;
+  }
+
+  insertWallet(wallet: Wallet): void {
+    this.em.persist(this.em.create(WalletRecord, walletToRecordData(wallet)));
+  }
+
+  updateWallet(wallet: Wallet): void {
+    const record = this.wallets.get(wallet.id);
+    if (record === undefined) throw new Error(`wallet ${wallet.id} não foi lida com lock nesta transação`);
+    this.em.assign(record, { balance: wallet.balance.toString(), version: wallet.version, updatedAt: wallet.updatedAt });
+  }
+
+  insertTransaction(transaction: WagerTransaction, schedule?: RetrySchedule): void {
+    const now = transaction.processedAt ?? transaction.createdAt;
+    const record = this.em.create(WagerTransactionRecord, {
+      ...transactionToRecordData(transaction, now),
+      attempts: schedule?.attempts ?? 0,
+      nextAttemptAt: schedule?.nextAttemptAt ?? null,
+    });
+    this.em.persist(record);
+    this.transactions.set(record.id, record);
+  }
+
+  insertLedgerEntry(entry: WalletLedgerEntry): void {
+    this.em.persist(this.em.create(LedgerEntryRecord, ledgerEntryToRecordData(entry)));
+  }
+
+  enqueue(message: OutboxMessage): void {
+    this.em.persist(
+      this.em.create(OutboxRecord, {
+        id: message.id,
+        aggregateId: message.aggregateId,
+        eventType: message.eventType,
+        payload: { ...message.payload },
+        occurredAt: message.occurredAt,
+        attempts: message.attempts,
+        nextAttemptAt: message.nextAttemptAt ?? message.occurredAt,
+        publishedAt: null,
+        lastError: null,
+      }),
+    );
+  }
+
+  private track(record: WagerTransactionRecord | null): WagerTransaction | undefined {
+    if (record === null) return undefined;
+    this.transactions.set(record.id, record);
+    return transactionFromRecord(record);
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

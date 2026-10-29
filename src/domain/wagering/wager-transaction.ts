@@ -85,6 +85,12 @@ export interface WagerTransactionState extends Omit<CreateWagerTransactionProps,
   observedBalance?: Money | undefined;
 }
 
+/**
+ * Provedor reservado às transações criadas pelo próprio sistema (abertura de wallet).
+ * Nenhuma entrada externa pode usá-lo: assim as chaves internas nunca colidem com as de um provedor.
+ */
+export const INTERNAL_PROVIDER_ID = "internal";
+
 export class WagerTransaction {
   private constructor(
     public readonly id: string,
@@ -112,6 +118,9 @@ export class WagerTransaction {
   static create(props: CreateWagerTransactionProps): WagerTransaction {
     if (props.kind === WagerTransactionKind.Opening && props.allowInternalKind !== true) {
       throw new InvalidWagerTransactionError("OPENING é interno e não pode ser submetido");
+    }
+    if (props.providerId === INTERNAL_PROVIDER_ID && props.allowInternalKind !== true) {
+      throw new InvalidWagerTransactionError(`providerId "${INTERNAL_PROVIDER_ID}" é reservado para transações internas`);
     }
     if (!props.money.isPositive()) {
       throw new InvalidWagerTransactionError("o valor da transação deve ser maior que zero");

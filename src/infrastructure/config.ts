@@ -2,6 +2,14 @@
 export interface AppConfig {
   readonly port: number;
   readonly databaseUrl: string;
+  /** Espera máxima por um lock de linha (ms) antes de responder falha transitória. */
+  readonly lockTimeoutMs: number;
+  /** Espera máxima por uma conexão livre do pool (ms) antes de responder falha transitória. */
+  readonly dbConnectTimeoutMs: number;
+  readonly pendingReference: {
+    /** Primeira reavaliação de uma PENDING_REFERENCE; as seguintes dobram (backoff exponencial). */
+    readonly baseDelayMs: number;
+  };
   readonly sqs: {
     readonly endpoint: string;
     readonly region: string;
@@ -36,6 +44,11 @@ export function loadConfig(): AppConfig {
   return {
     port: intFromEnv("PORT", 3000),
     databaseUrl: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/wagering",
+    lockTimeoutMs: intFromEnv("LOCK_TIMEOUT_MS", 5_000),
+    dbConnectTimeoutMs: intFromEnv("DB_CONNECT_TIMEOUT_MS", 5_000),
+    pendingReference: {
+      baseDelayMs: intFromEnv("PENDING_REFERENCE_BASE_DELAY_MS", 2_000, 0),
+    },
     sqs: {
       endpoint: process.env.SQS_ENDPOINT ?? "http://localhost:4566",
       region: process.env.AWS_REGION ?? "us-east-1",
