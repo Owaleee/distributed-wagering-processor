@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { DeleteMessageCommand } from "@aws-sdk/client-sqs";
 import { TransientInfrastructureError } from "../../src/application/errors";
 import { UNIT_OF_WORK, type TransactionalStore, type UnitOfWork } from "../../src/application/ports";
 import { type TestApp, api, startTestApp, wagerPayload } from "../support/app";
@@ -243,10 +244,14 @@ describe("consumidor SQS", () => {
     const d = await queueDepth(sqs, queues.wagerQueueUrl);
     expect(d.visible + d.inFlight).toBe(0); // terminou e fez ack antes de parar
 
+    // Parado não consome: a mensagem nova fica visível na fila, sem ninguém segurando.
     const later = wagerPayload(wallet, "BET", "1.00");
     await publishWager(app.app, later);
-    await new Promise((r) => setTimeout(r, 1_500));
-    expect(await txByExternal(later.externalTransactionId)).toBeUndefined(); // parado não consome
+    await waitFor(async () => (await queueDepth(sqs, queues.wagerQueueUrl)).visible === 1, 10_000, "mensagem visível na fila");
+    expect((await queueDepth(sqs, queues.wagerQueueUrl)).inFlight).toBe(0);
+    expect(await txByExternal(later.externalTransactionId)).toBeUndefined();
+    await receiveAll(sqs, queues.wagerQueueUrl, 0).then((ms) => Promise.all(ms.map((m) =>
+      sqs.send(new DeleteMessageCommand({ QueueUrl: queues.wagerQueueUrl, ReceiptHandle: m.ReceiptHandle }))))); // limpa
   });
 });
 

@@ -140,7 +140,7 @@ describe("transactional outbox", () => {
     const [row] = await db.sql`select attempts, last_error, next_attempt_at > now() as later from outbox_messages where published_at is null limit 1`;
     expect(row).toEqual({ attempts: 1, last_error: "SQS indisponível (simulado)", later: true });
 
-    await db.sql`update outbox_messages set next_attempt_at = now() where published_at is null`; // acelera o relógio
+    await db.sql`update outbox_messages set next_attempt_at = now() - interval '1 second' where published_at is null`; // acelera o relógio
     while ((await buildRelay().relayBatch()) > 0) {}
     expect(await pendingCount()).toBe(0);
     await drainEvents();
@@ -153,7 +153,9 @@ describe("referências fora de ordem", () => {
     (await db.sql`select status, failure_code, attempts, processing_failures from wager_transactions where id = ${id}`)[0] as {
       status: string; failure_code: string | null; attempts: number; processing_failures: number;
     };
-  const makeDue = (id: string) => db.sql`update wager_transactions set next_attempt_at = now() where id = ${id}`;
+  // "Vencida" bem no passado: now() do PostgreSQL tem microssegundos e o Clock da aplicação, milissegundos;
+  // no mesmo milissegundo, now() pareceria estar no futuro para o worker.
+  const makeDue = (id: string) => db.sql`update wager_transactions set next_attempt_at = now() - interval '1 second' where id = ${id}`;
 
   test("ROLLBACK entregue antes da BET: fica pendente e é aplicado quando a BET chega", async () => {
     const wallet = await newWallet("100.00");
@@ -203,7 +205,7 @@ describe("referências fora de ordem", () => {
       bets.map((b) => client.submit(wagerPayload(wallet, "ROLLBACK", "5.00", { referenceExternalTransactionId: b.externalTransactionId }))),
     );
     for (const b of bets) await client.submit(b); // as referências (WIN) chegam: saldo 30.00
-    await db.sql`update wager_transactions set next_attempt_at = now() where status = 'PENDING_REFERENCE' and wallet_id = ${wallet.id}`;
+    await db.sql`update wager_transactions set next_attempt_at = now() - interval '1 second' where status = 'PENDING_REFERENCE' and wallet_id = ${wallet.id}`;
     const w = worker();
     await Promise.all([
       (async () => { while (await w.processOne()) {} })(),

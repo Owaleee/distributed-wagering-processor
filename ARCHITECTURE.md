@@ -165,6 +165,19 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Ordem de locks sem deadlock:** o worker trava a pendência e depois a wallet. O fluxo HTTP/SQS trava a wallet e só **lê** pendências, sem travá-las. Não há ciclo.
 - **Evidência:** `test/integration/outbox-and-pending.test.ts` (ROLLBACK antes da BET e o replay 202 → 200, referência que nunca chega, referência ainda pendente, dois workers em paralelo, acordar ao PROCESSED e ao REJECTED, FAILED com contadores separados).
 
+### D20 — Múltiplas instâncias e reinício
+- **Nenhuma coordenação entre instâncias:** não há líder, lock distribuído nem estado em memória compartilhado. Cada instância roda HTTP, consumidor, publicador da outbox e worker de pendentes. Quem decide é o PostgreSQL: o lock da wallet serializa operações da mesma wallet; `SKIP LOCKED` divide outbox e pendências entre os workers; os UNIQUE impedem efeito duplicado.
+- **Teste com processos reais:** `test/concurrency/multi-instance.test.ts` sobe **3 processos** `bun src/main.ts` independentes, com o mesmo PostgreSQL e as mesmas filas. Ele verifica:
+  - uma hot wallet disputada pelas 3 instâncias, com cada aposta enviada em duplicata para instâncias diferentes;
+  - mensagens SQS duplicadas consumidas pelas 3;
+  - **SIGKILL** de uma instância no meio da carga HTTP: depois do reinício e do reenvio completo pelo provedor, só há replays, o saldo e o ledger fecham e a outbox drena;
+  - **SIGKILL** de uma instância consumindo a fila: as mensagens dela voltam após o visibility timeout, as outras assumem, e cada uma tem efeito único;
+  - fora de ordem entre instâncias: ROLLBACK numa, BET noutra, e o worker de qualquer uma resolve;
+  - **SIGTERM** encerra com código 0 enquanto as outras seguem atendendo.
+- **Testes por condição, não por tempo:** os momentos de falha ("mata no meio da carga") são disparados quando o banco mostra que a carga começou, e as verificações esperam o estado final com prazo, em vez de dormir um tempo fixo. Isso tira a instabilidade de máquinas lentas (como o CI).
+- **Encerramento:** o `main.ts` trata SIGTERM/SIGINT chamando `app.close()`, que dispara os hooks de shutdown na ordem certa (os processos de fundo param antes do ORM fechar), e sai com 0. Há um limite rígido de 25 s para não travar um deploy.
+- **Relógio:** as datas de agendamento vêm do Clock da aplicação (milissegundos). Comparações com `now()` do PostgreSQL (microssegundos) são evitadas no código; nos testes, "vencido" é marcado no passado para não depender do mesmo milissegundo.
+
 ## Máquina de estados de `WagerTransaction`
 
 ```
