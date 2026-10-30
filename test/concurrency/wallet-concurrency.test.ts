@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type TestApp, api, startTestApp, wagerPayload } from "../support/app";
 import { type TestDatabase, createTestDatabase } from "../support/database";
-import { expectLedgerConsistent } from "../support/invariants";
+import { expectLedgerConsistent, expectNoStructuralViolations } from "../support/invariants";
 
 /**
  * Concorrência com paralelismo real: requisições HTTP simultâneas contra a aplicação real,
@@ -18,6 +18,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await expectLedgerConsistent(db.sql);
+  await expectNoStructuralViolations(db.sql);
   await app?.close();
   await db?.drop();
 });

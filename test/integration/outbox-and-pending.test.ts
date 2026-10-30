@@ -13,7 +13,7 @@ import { OutboxRelay, type OutboxRelayHooks } from "../../src/infrastructure/wor
 import type { PendingReferenceWorker } from "../../src/infrastructure/workers/pending-reference-worker";
 import { type TestApp, api, startTestApp, wagerPayload } from "../support/app";
 import { type TestDatabase, createTestDatabase } from "../support/database";
-import { expectLedgerConsistent } from "../support/invariants";
+import { expectLedgerConsistent, expectNoStructuralViolations } from "../support/invariants";
 import { receiveAll, sqsOf, waitFor } from "../support/sqs";
 
 let db: TestDatabase;
@@ -27,6 +27,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await expectLedgerConsistent(db.sql);
+  await expectNoStructuralViolations(db.sql);
   await app?.close();
   await db?.drop();
 });

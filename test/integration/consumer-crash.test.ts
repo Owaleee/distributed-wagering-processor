@@ -4,7 +4,7 @@ import { loadConfig } from "../../src/infrastructure/config";
 import { createSqsClient } from "../../src/infrastructure/messaging/sqs-client";
 import { api, wagerPayload } from "../support/app";
 import { type TestDatabase, createTestDatabase } from "../support/database";
-import { expectLedgerConsistent } from "../support/invariants";
+import { expectLedgerConsistent, expectNoStructuralViolations } from "../support/invariants";
 import { type Cluster, startCluster } from "../support/processes";
 import { queueDepth, waitFor } from "../support/sqs";
 
@@ -24,6 +24,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await cluster?.stopAll();
   await expectLedgerConsistent(db.sql);
+  await expectNoStructuralViolations(db.sql);
   await db?.drop();
 });
 

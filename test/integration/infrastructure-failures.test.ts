@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { type TestApp, api, startTestApp, wagerPayload } from "../support/app";
 import { type TestDatabase, createTestDatabase } from "../support/database";
-import { expectLedgerConsistent } from "../support/invariants";
+import { expectLedgerConsistent, expectNoStructuralViolations } from "../support/invariants";
 import { type TcpProxy, startTcpProxy } from "../support/tcp-proxy";
 
 /**
@@ -16,6 +16,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await expectLedgerConsistent(db.sql);
+  await expectNoStructuralViolations(db.sql);
   await db?.drop();
 });
 

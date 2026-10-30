@@ -4,7 +4,7 @@ import { TransientInfrastructureError } from "../../src/application/errors";
 import { UNIT_OF_WORK, type TransactionalStore, type UnitOfWork } from "../../src/application/ports";
 import { type TestApp, api, startTestApp, wagerPayload } from "../support/app";
 import { type TestDatabase, createTestDatabase } from "../support/database";
-import { expectLedgerConsistent } from "../support/invariants";
+import { expectLedgerConsistent, expectNoStructuralViolations } from "../support/invariants";
 import { buildConsumer, publishWager, queueDepth, receiveAll, sqsOf, waitFor } from "../support/sqs";
 
 /**
@@ -23,6 +23,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await expectLedgerConsistent(db.sql);
+  await expectNoStructuralViolations(db.sql);
   await app?.close();
   await db?.drop();
 });

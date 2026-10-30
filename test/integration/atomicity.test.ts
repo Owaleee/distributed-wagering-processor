@@ -5,7 +5,7 @@ import { PROCESS_WAGER } from "../../src/interface/http/tokens";
 import type { ProcessWagerTransaction } from "../../src/application/wagering/process-wager-transaction";
 import { type TestApp, api, startTestApp, wagerPayload } from "../support/app";
 import { type TestDatabase, createTestDatabase } from "../support/database";
-import { expectLedgerConsistent } from "../support/invariants";
+import { expectLedgerConsistent, expectNoStructuralViolations } from "../support/invariants";
 
 /**
  * Atomicidade entre wallet, transação, ledger, inbox e outbox: se qualquer etapa falhar antes do
@@ -20,6 +20,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await expectLedgerConsistent(db.sql);
+  await expectNoStructuralViolations(db.sql);
   await app?.close();
   await db?.drop();
 });
