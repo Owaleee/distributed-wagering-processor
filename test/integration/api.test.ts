@@ -183,6 +183,38 @@ describe("POST /wagering/transactions", () => {
     expect((await client.get(`/wallets/${wallet.id}`)).body.balance.amount).toBe("100.00");
   });
 
+  test.each(["REFUND", "ROLLBACK"])("%s de uma BET cujo WIN já foi pago → 422 REFERENCE_ALREADY_SETTLED", async (kind) => {
+    const wallet = await newWallet("100.00");
+    const bet = wagerPayload(wallet, "BET", "10.00");
+    await client.submit(bet);
+    await client.submit(wagerPayload(wallet, "WIN", "50.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    const reversal = await client.submit(wagerPayload(wallet, kind, "10.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    expect(reversal.status).toBe(422);
+    expect(reversal.body.failureCode).toBe("REFERENCE_ALREADY_SETTLED");
+    expect((await client.get(`/wallets/${wallet.id}`)).body.balance.amount).toBe("140.00");
+  });
+
+  test("com o WIN revertido primeiro, a BET pode ser devolvida", async () => {
+    const wallet = await newWallet("100.00");
+    const bet = wagerPayload(wallet, "BET", "10.00");
+    const win = wagerPayload(wallet, "WIN", "50.00", { referenceExternalTransactionId: bet.externalTransactionId });
+    await client.submit(bet);
+    await client.submit(win);
+    expect((await client.submit(wagerPayload(wallet, "ROLLBACK", "50.00", { referenceExternalTransactionId: win.externalTransactionId }))).status).toBe(200);
+    const refund = await client.submit(wagerPayload(wallet, "REFUND", "10.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    expect(refund.status).toBe(200);
+    expect((await client.get(`/wallets/${wallet.id}`)).body.balance.amount).toBe("100.00");
+  });
+
+  test("WIN sem referência não liga o prêmio à BET: a devolução da BET é aceita (limitação documentada)", async () => {
+    const wallet = await newWallet("100.00");
+    const bet = wagerPayload(wallet, "BET", "10.00");
+    await client.submit(bet);
+    await client.submit(wagerPayload(wallet, "WIN", "50.00"));
+    const refund = await client.submit(wagerPayload(wallet, "REFUND", "10.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    expect(refund.status).toBe(200);
+  });
+
   test("ROLLBACK de WIN sem saldo → REVERSAL_INSUFFICIENT_FUNDS", async () => {
     const wallet = await newWallet("0.00");
     const win = wagerPayload(wallet, "WIN", "30.00");

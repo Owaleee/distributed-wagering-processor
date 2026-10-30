@@ -92,6 +92,7 @@ describe("migrations", () => {
         "Migration20261029170000InitialSchema",
         "Migration20261029190000PendingReferenceWorker",
         "Migration20261030010000OutboxRelayOrder",
+        "Migration20261030020000ActiveWinLookup",
       ];
       expect(await scratch.migrateUp()).toEqual(all);
       expect(await scratch.migrateDown()).toEqual([...all].reverse());

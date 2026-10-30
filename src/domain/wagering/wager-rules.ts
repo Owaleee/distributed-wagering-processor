@@ -17,6 +17,8 @@ export interface WagerContext {
   readonly reference: WagerTransaction | undefined;
   /** A referência já foi revertida por um REFUND/ROLLBACK PROCESSED (vale para qualquer kind que referencie). */
   readonly referenceAlreadyReversed: boolean;
+  /** A referência (uma BET) já tem um WIN PROCESSED, ainda não revertido, apontando para ela. */
+  readonly referenceHasActiveWin?: boolean;
 }
 
 const ALLOWED_REFERENCE_KINDS: Partial<Record<WagerTransactionKind, readonly WagerTransactionKind[]>> = {
@@ -67,6 +69,10 @@ export function decideWager(ctx: WagerContext): WagerDecision {
     // Reverter de novo, ou pagar um WIN de uma BET que já foi desfeita, criaria crédito indevido.
     if (ctx.referenceAlreadyReversed) {
       return { outcome: "reject", code: FailureCode.AlreadyReversed, reference };
+    }
+    // O caminho inverso: devolver uma BET cujo prêmio já foi pago deixaria o jogador com a aposta e o prêmio.
+    if (tx.requiresReference() && reference.kind === WagerTransactionKind.Bet && ctx.referenceHasActiveWin === true) {
+      return { outcome: "reject", code: FailureCode.ReferenceAlreadySettled, reference };
     }
   }
 

@@ -300,4 +300,27 @@ describe("Regras — limites e referências revertidas", () => {
     expect(win.failureCode).toBe(FailureCode.AlreadyReversed);
     expect(wallet.balance.toString()).toBe("100.00");
   });
+
+  test.each([K.Refund, K.Rollback])("%s de uma BET com WIN pago → REFERENCE_ALREADY_SETTLED, sem crédito", (kind) => {
+    const wallet = openWallet("100.00");
+    const bet = processedBet(wallet, "10.00");
+    const reversal = wager(kind, "10.00", { referenceExternalTransactionId: bet.externalTransactionId });
+    const ctx: WagerContext = { transaction: reversal, wallet, reference: bet, referenceAlreadyReversed: false, referenceHasActiveWin: true };
+    const decision = decideWager(ctx);
+    applyWagerDecision(ctx, decision, { ledgerEntryId: nextId("entry"), now: NOW });
+    expect(reversal.status).toBe(S.Rejected);
+    expect(reversal.failureCode).toBe(FailureCode.ReferenceAlreadySettled);
+    expect(wallet.balance.toString()).toBe("90.00");
+  });
+
+  test("a regra vale só para BET: ROLLBACK do próprio WIN segue permitido", () => {
+    const wallet = openWallet("100.00");
+    const win = wager(K.Win, "50.00");
+    run(wallet, win);
+    const rollback = wager(K.Rollback, "50.00", { referenceExternalTransactionId: win.externalTransactionId });
+    const ctx: WagerContext = { transaction: rollback, wallet, reference: win, referenceAlreadyReversed: false, referenceHasActiveWin: true };
+    applyWagerDecision(ctx, decideWager(ctx), { ledgerEntryId: nextId("entry"), now: NOW });
+    expect(rollback.status).toBe(S.Processed);
+    expect(wallet.balance.toString()).toBe("100.00");
+  });
 });

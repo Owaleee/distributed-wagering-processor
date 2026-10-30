@@ -26,6 +26,11 @@ export enum FailureCode {
   AmountMismatch = "AMOUNT_MISMATCH",
   /** A referência já foi revertida (vale para REFUND, ROLLBACK e para um WIN que aponte para uma BET revertida). */
   AlreadyReversed = "ALREADY_REVERSED",
+  /**
+   * Reversão de uma BET que já teve um WIN pago (e não revertido): devolver a aposta e manter o prêmio
+   * creditaria duas vezes. O provedor deve reverter o WIN primeiro.
+   */
+  ReferenceAlreadySettled = "REFERENCE_ALREADY_SETTLED",
   /** O crédito faria o saldo passar do maior valor armazenável. */
   BalanceLimitExceeded = "BALANCE_LIMIT_EXCEEDED",
 

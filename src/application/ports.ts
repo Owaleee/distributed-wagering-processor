@@ -46,6 +46,8 @@ export interface TransactionalStore {
   findTransactionByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
   /** Já existe reversão PROCESSED apontando para esta transação? */
   hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
+  /** Existe um WIN PROCESSED apontando para esta BET que não tenha sido revertido? */
+  hasActiveWin(betTransactionId: string): Promise<boolean>;
   /**
    * Trava (FOR UPDATE SKIP LOCKED) transações PENDING_REFERENCE vencidas. Linhas já travadas por
    * outro worker são puladas: cada pendência é reavaliada por um worker de cada vez.

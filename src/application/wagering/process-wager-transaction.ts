@@ -12,7 +12,7 @@ import { Money, type MoneyProps } from "../../domain/money/money";
 import { DomainError } from "../../domain/shared/domain-error";
 import { FailureCode } from "../../domain/wagering/failure-code";
 import { computePayloadHash } from "../../domain/wagering/payload-hash";
-import { applyWagerDecision, decideWager, type WagerDecision } from "../../domain/wagering/wager-rules";
+import { applyWagerDecision, decideWager, type WagerContext, type WagerDecision } from "../../domain/wagering/wager-rules";
 import {
   EXTERNAL_KINDS,
   INTERNAL_PROVIDER_ID,
@@ -121,10 +121,7 @@ export class ProcessWagerTransaction {
     const reference = transaction.hasReference()
       ? await store.findTransactionByExternalId(transaction.providerId, transaction.referenceExternalTransactionId ?? "")
       : undefined;
-    // Vale para qualquer kind que referencia (REFUND, ROLLBACK e WIN): ver `decideWager`.
-    const referenceAlreadyReversed = reference !== undefined ? await store.hasProcessedReversal(reference.id) : false;
-
-    const ctx = { transaction, wallet, reference, referenceAlreadyReversed };
+    const ctx = await this.contextFor(store, transaction, wallet, reference);
     const decision = decideWager(ctx);
     const entry = applyWagerDecision(ctx, decision, { ledgerEntryId: this.ids.next(), now });
 
@@ -179,9 +176,7 @@ export class ProcessWagerTransaction {
       transaction.providerId,
       transaction.referenceExternalTransactionId ?? "",
     );
-    // Vale para qualquer kind que referencia (REFUND, ROLLBACK e WIN): ver `decideWager`.
-    const referenceAlreadyReversed = reference !== undefined ? await store.hasProcessedReversal(reference.id) : false;
-    const ctx = { transaction, wallet, reference, referenceAlreadyReversed };
+    const ctx = await this.contextFor(store, transaction, wallet, reference);
     let decision = decideWager(ctx);
 
     if (decision.outcome === "pending") {
@@ -232,6 +227,30 @@ export class ProcessWagerTransaction {
       });
     }
     return undefined;
+  }
+
+  /**
+   * Monta o contexto das regras com os fatos sobre a referência que só o banco sabe.
+   * Lido depois do lock da wallet: as transações da mesma wallet não mudam no meio da decisão.
+   */
+  private async contextFor(
+    store: TransactionalStore,
+    transaction: WagerTransaction,
+    wallet: Wallet,
+    reference: WagerTransaction | undefined,
+  ): Promise<WagerContext> {
+    if (reference === undefined) return { transaction, wallet, reference, referenceAlreadyReversed: false };
+    return {
+      transaction,
+      wallet,
+      reference,
+      // Vale para qualquer kind que referencia (REFUND, ROLLBACK e WIN): ver `decideWager`.
+      referenceAlreadyReversed: await store.hasProcessedReversal(reference.id),
+      referenceHasActiveWin:
+        transaction.requiresReference() && reference.kind === WagerTransactionKind.Bet
+          ? await store.hasActiveWin(reference.id)
+          : false,
+    };
   }
 
   private eventsFor(

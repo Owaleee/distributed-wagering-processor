@@ -223,10 +223,11 @@ PROCESSED, REJECTED, FAILED: terminais (qualquer transição lança InvalidTrans
 | `REFERENCE_MISMATCH` | REJECTED | Referência de outro player/wallet/moeda/rodada/provider | Corrigir o payload |
 | `AMOUNT_MISMATCH` | REJECTED | Valor da reversão ≠ valor da referência | Corrigir o payload |
 | `ALREADY_REVERSED` | REJECTED | A referência já foi revertida (inclusive WIN de uma BET revertida) | Não reenviar |
+| `REFERENCE_ALREADY_SETTLED` | REJECTED | REFUND/ROLLBACK de uma BET que já teve um WIN pago e não revertido | Reverter o WIN primeiro; depois a BET |
 | `BALANCE_LIMIT_EXCEEDED` | REJECTED | O crédito passaria do maior saldo armazenável (18 dígitos inteiros) | Não reenviar; tratar manualmente |
 | `PROCESSING_FAILED` | FAILED | Falha permanente de infraestrutura com a transação já gravada (ver D19) | Contatar o operador |
 
-A ordem das verificações define qual código vence quando há mais de um problema: moeda → player → referência (ausente, não processada, escopo, tipo, valor, já revertida) → limite de saldo → saldo.
+A ordem das verificações define qual código vence quando há mais de um problema: moeda → player → referência (ausente, não processada, escopo, tipo, valor, já revertida, já liquidada por WIN) → limite de saldo → saldo.
 
 ## Idempotência: `payloadHash`
 
@@ -237,13 +238,14 @@ SHA-256 (hex) do **JSON canônico** dos campos de negócio: `providerId`, `exter
 1. **Escala fixa de 2 casas na entrada:** `amount` precisa ter exatamente 2 casas (`"25.00"`). `"25"` e `"25.5"` são payload inválido; `"25.005"` é rejeitado, nunca arredondado.
 2. **Uma reversão por referência, de qualquer tipo:** a regra 4 do README fala em "mesmo tipo", mas REFUND seguido de ROLLBACK da mesma BET creditaria duas vezes. Para proteger a invariante de não duplicar créditos, uma referência só pode ser revertida uma vez. Um ROLLBACK de um REFUND é permitido, porque a referência é outra transação.
 3. **WIN com referência opcional:** se vier, é validada como nas reversões (BET, mesmo escopo, existente) e **não pode apontar para uma BET já revertida** (pagaria prêmio de uma aposta desfeita). Se não vier, o WIN é processado normalmente.
-4. **Referência ainda pendente:** se a referência existe mas está `PENDING_REFERENCE`, a transação dependente também fica pendente, em vez de ser rejeitada.
-5. **LOSS e BET não aceitam referência:** recebê-la é payload inválido.
-6. **Valor sempre maior que zero, inclusive em LOSS:** uma operação de valor 0.00 é payload inválido. O LOSS carrega o valor apostado que foi perdido; uma rodada sem aposta não gera operação.
-7. **Limite de saldo:** um crédito que passaria de 999999999999999999.99 é rejeitado com `BALANCE_LIMIT_EXCEEDED`, em vez de estourar a coluna do banco.
-8. **`playerId` e `walletId` são UUID:** os ids são gerados por este serviço (wallet) ou pelo cadastro de jogadores, então o formato é validado na entrada. Ids do provedor (`providerId`, `externalTransactionId`, `roundId`, `gameId`) são texto livre de até 128 caracteres.
-9. **`providerId = "internal"` é reservado** às transações criadas pelo próprio sistema (abertura de wallet). Uma entrada externa com esse provedor é payload inválido, para que nenhuma chave de provedor colida com uma chave interna.
-10. **`Idempotency-Key` é única por provedor**, não global: provedores não se coordenam entre si, e a chave de um nunca deve achar (nem revelar) a transação de outro.
+4. **BET com WIN pago não pode ser revertida direto** (a regra inversa da 3): um REFUND ou ROLLBACK de uma BET que tem um WIN `PROCESSED` apontando para ela, e não revertido, é rejeitado com `REFERENCE_ALREADY_SETTLED`. Devolver a aposta e manter o prêmio creditaria duas vezes pela mesma rodada. O provedor reverte o WIN primeiro (ROLLBACK do WIN) e então a BET. Só vale quando o WIN informa a referência (ver limitações).
+5. **Referência ainda pendente:** se a referência existe mas está `PENDING_REFERENCE`, a transação dependente também fica pendente, em vez de ser rejeitada.
+6. **LOSS e BET não aceitam referência:** recebê-la é payload inválido.
+7. **Valor sempre maior que zero, inclusive em LOSS:** uma operação de valor 0.00 é payload inválido. O LOSS carrega o valor apostado que foi perdido; uma rodada sem aposta não gera operação.
+8. **Limite de saldo:** um crédito que passaria de 999999999999999999.99 é rejeitado com `BALANCE_LIMIT_EXCEEDED`, em vez de estourar a coluna do banco.
+9. **`playerId` e `walletId` são UUID:** os ids são gerados por este serviço (wallet) ou pelo cadastro de jogadores, então o formato é validado na entrada. Ids do provedor (`providerId`, `externalTransactionId`, `roundId`, `gameId`) são texto livre de até 128 caracteres.
+10. **`providerId = "internal"` é reservado** às transações criadas pelo próprio sistema (abertura de wallet). Uma entrada externa com esse provedor é payload inválido, para que nenhuma chave de provedor colida com uma chave interna.
+11. **`Idempotency-Key` é única por provedor**, não global: provedores não se coordenam entre si, e a chave de um nunca deve achar (nem revelar) a transação de outro.
 
 ## Limitações conhecidas
 
@@ -259,6 +261,7 @@ SHA-256 (hex) do **JSON canônico** dos campos de negócio: `providerId`, `exter
 10. **Reversão parcial fora de escopo:** REFUND e ROLLBACK exigem o mesmo valor da referência.
 11. **Ledger de partida simples:** cada movimento gera um lançamento na wallet. Partidas dobradas (contrapartida em contas da casa) seriam o próximo passo.
 12. **Dependência com versão forçada:** `kysely` está fixado em 0.29.7 por `overrides` para corrigir um vazamento de conexão (D16). Ao atualizar o MikroORM, rever se o `overrides` ainda é necessário.
+13. **Prêmio sem referência não liga o WIN à BET:** a regra de "BET já liquidada" (interpretação 4) só enxerga WINs que informam `referenceExternalTransactionId`. Um WIN sem referência não impede a devolução da BET da mesma rodada. Exigir a referência em todo WIN fecharia isso, mas mudaria o contrato do README, em que ela é opcional.
 
 ## Revisão contra as falhas eliminatórias
 

@@ -117,6 +117,20 @@ export class MikroOrmStore implements TransactionalStore {
     return count > 0;
   }
 
+  /** SQL direto: o "não revertido" é um NOT EXISTS sobre a própria tabela, que o ORM não expressa num filtro simples. */
+  async hasActiveWin(betTransactionId: string): Promise<boolean> {
+    const rows = await this.em.execute<{ found: number }[]>(
+      `select 1 as found from wager_transactions w
+        where w.reference_transaction_id = ? and w.kind = 'WIN' and w.status = 'PROCESSED'
+          and not exists (
+            select 1 from wager_transactions r
+             where r.reference_transaction_id = w.id and r.kind in ('REFUND', 'ROLLBACK') and r.status = 'PROCESSED')
+        limit 1`,
+      [betTransactionId],
+    );
+    return rows.length > 0;
+  }
+
   insertWallet(wallet: Wallet): void {
     this.em.persist(this.em.create(WalletRecord, walletToRecordData(wallet)));
   }
