@@ -24,6 +24,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await cluster?.stopAll();
+  await expectLedgerConsistent(db.sql);
   await db?.drop();
 });
 

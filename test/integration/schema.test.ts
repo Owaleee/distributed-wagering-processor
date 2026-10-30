@@ -88,7 +88,11 @@ describe("migrations", () => {
   test("são reversíveis: down remove tudo e up recria", async () => {
     const scratch = await createTestDatabase({ migrate: false });
     try {
-      const all = ["Migration20261029170000InitialSchema", "Migration20261029190000PendingReferenceWorker"];
+      const all = [
+        "Migration20261029170000InitialSchema",
+        "Migration20261029190000PendingReferenceWorker",
+        "Migration20261030010000OutboxRelayOrder",
+      ];
       expect(await scratch.migrateUp()).toEqual(all);
       expect(await scratch.migrateDown()).toEqual([...all].reverse());
       const left = await scratch.sql`select table_name from information_schema.tables

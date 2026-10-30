@@ -80,6 +80,7 @@ export class OutboxRelay extends PollingWorker {
       await this.hooks.afterPublish?.(rows.map((r) => r.id));
 
       const publishedAt = this.clock.now();
+      const published: string[] = [];
       for (const row of rows) {
         const message = OutboxMessage.rehydrate({
           id: row.id, aggregateId: row.aggregate_id, eventType: row.event_type, payload: row.payload,
@@ -88,7 +89,7 @@ export class OutboxRelay extends PollingWorker {
         const error = results.has(row.id) ? results.get(row.id) : "sem resposta do publisher";
         if (error === undefined) {
           message.markPublished(publishedAt);
-          await em.execute(`update outbox_messages set published_at = ?, last_error = null where id = ?`, [publishedAt, row.id]);
+          published.push(message.id);
         } else {
           message.scheduleRetry(publishedAt);
           this.metrics.retry("outbox");
@@ -100,6 +101,10 @@ export class OutboxRelay extends PollingWorker {
             eventId: row.id, eventType: row.event_type, attempts: message.attempts, error,
           });
         }
+      }
+      // Um único UPDATE para o lote publicado (em vez de uma ida ao banco por evento).
+      if (published.length > 0) {
+        await em.execute(`update outbox_messages set published_at = ?, last_error = null where id in (?)`, [publishedAt, published]);
       }
       return rows.length;
     });

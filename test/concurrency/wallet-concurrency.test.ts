@@ -17,6 +17,7 @@ beforeAll(async () => {
   client = api(app.baseUrl);
 });
 afterAll(async () => {
+  await expectLedgerConsistent(db.sql);
   await app?.close();
   await db?.drop();
 });

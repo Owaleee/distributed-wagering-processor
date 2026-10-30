@@ -29,7 +29,8 @@
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",
     "typecheck": "tsc --noEmit -p .",
-    "hooks:install": "git config core.hooksPath scripts/hooks"
+    "hooks:install": "git config core.hooksPath scripts/hooks",
+    "test:load": "bun scripts/load-test.ts"
   },
   "overrides": {
     "kysely": "0.29.7"

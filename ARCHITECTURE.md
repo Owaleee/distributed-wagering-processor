@@ -151,6 +151,7 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Falha no SQS:** `OutboxMessage.scheduleRetry` (backoff exponencial de 1 s a 5 min), `attempts` e `last_error` gravados. O evento nunca é descartado.
 - **Ordem dos eventos:** não há ordem global garantida, porque vários publishers rodam em paralelo e um lote que falhou volta depois. Os eventos de saldo (`WalletBalanceChanged`) usam `MessageGroupId = walletId` e carregam `walletVersion`, que cresce de 1 em 1 por wallet. **O consumidor deve ordenar e deduplicar por `walletVersion`** (ignorar versões já vistas, esperar as que faltam), em vez de confiar na ordem de chegada. Os eventos de transação usam o `transactionId` como grupo.
 - **SQL direto no relay:** a seleção precisa de `ORDER BY … LIMIT … FOR UPDATE SKIP LOCKED` numa tabela técnica, sem regra de domínio para hidratar; o estado de cada evento continua decidido pelo `OutboxMessage`.
+- **Índice na ordem da leitura:** `(occurred_at, id) where published_at is null` (migration `Migration20261030010000OutboxRelayOrder`), e um único `UPDATE` marca o lote publicado. O índice anterior obrigava a ordenar todos os pendentes a cada lote; achado e medido no teste de carga (`LOAD_TEST.md`).
 - **Métrica `outbox_lag_seconds`:** idade do evento pendente mais antigo, atualizada a cada rodada.
 - **Trade-off:** a transação do relay fica aberta durante a chamada ao SQS (lotes pequenos, 10 por padrão). Uma alternativa sem transação longa seria um *lease* (`locked_until`), com mais complexidade e o mesmo resultado at-least-once.
 - **Evidência:** `test/integration/outbox-and-pending.test.ts` (envelope, publishers concorrentes sem sobreposição, crash entre publicar e marcar, SQS indisponível com backoff, ciclo de vida na aplicação).
@@ -246,4 +247,28 @@ SHA-256 (hex) do **JSON canônico** dos campos de negócio: `providerId`, `exter
 
 ## Limitações conhecidas
 
-_A preencher._
+1. **Vazão de uma única wallet:** o lock pessimista serializa as operações da mesma wallet. Quem espera o lock ocupa uma conexão do pool, então uma hot wallet muito disputada aumenta a cauda de latência das demais (medido em `LOAD_TEST.md`). Mitigações possíveis: limitar requisições em espera por wallet, pool dedicado ou sub-wallets.
+2. **Consumidor processa uma mensagem por vez por instância:** é o que preserva a ordem por wallet dentro do lote (D17). A vazão da fila escala com o número de instâncias, não com paralelismo dentro de uma. O próximo passo seria processar grupos (wallets) diferentes em paralelo, mantendo a sequência dentro de cada grupo.
+3. **Inbox e outbox crescem para sempre:** não há rotina de retenção. Em produção, um job apagaria inbox mais antiga que a janela de redelivery do broker (dias) e outbox já publicada (horas), ou particionaria as tabelas por data. As transações e o ledger nunca são apagados (são o registro auditável).
+4. **`FAILED` só no worker de pendências:** é o único ponto em que uma transação já gravada pode falhar repetidamente por infraestrutura (D19). Nas entradas HTTP e SQS, uma falha desfaz tudo antes de a transação existir: o HTTP responde 503 e a mensagem SQS volta para a fila e, se persistir, vai para a DLQ.
+5. **Publicação at-least-once e sem ordem global:** um evento pode ser publicado mais de uma vez (crash entre publicar e marcar) e lotes podem sair fora de ordem. O consumidor deve deduplicar pelo `eventId` e ordenar por `walletVersion` (D18). Os consumidores de `wallet-events.fifo` estão fora do escopo.
+6. **Transação aberta durante a publicação da outbox:** o relay mantém o lock do lote enquanto chama o SQS. Os lotes são pequenos, mas um SQS lento segura conexões. Um *lease* resolveria sem transação longa.
+7. **Emulador de SQS:** os testes rodam no MiniStack, não na AWS. Os comportamentos usados (FIFO, visibilidade, `ApproximateReceiveCount`, redrive) foram verificados nele, mas podem divergir em detalhes.
+8. **Escala fixa de 2 casas:** o modelo e o schema são multi-moeda (wallet única por player + moeda, conflito testado), mas a escala é 2 para todas as moedas, como o desafio define.
+9. **Sem autenticação:** ver D15.
+10. **Reversão parcial fora de escopo:** REFUND e ROLLBACK exigem o mesmo valor da referência.
+11. **Ledger de partida simples:** cada movimento gera um lançamento na wallet. Partidas dobradas (contrapartida em contas da casa) seriam o próximo passo.
+12. **Dependência com versão forçada:** `kysely` está fixado em 0.29.7 por `overrides` para corrigir um vazamento de conexão (D16). Ao atualizar o MikroORM, rever se o `overrides` ainda é necessário.
+
+## Revisão contra as falhas eliminatórias
+
+| Falha eliminatória (README, seção 14) | Como está coberta | Evidência |
+|---|---|---|
+| `number` para dinheiro | `Money` usa `bigint` em centavos; o banco usa `NUMERIC(20,2)` e os contratos usam string com 2 casas. Entrada `number` é rejeitada | `money.test.ts`, `api.test.ts` |
+| Saldo negativo causado por race | lock por wallet antes de qualquer leitura + `CHECK (balance >= 0)` | `wallet-concurrency.test.ts` (100/80/80, hot wallet), `multi-instance.test.ts` |
+| Débito ou crédito duplicado | idempotência persistente (UNIQUE por provedor), inbox, reversão única (índice parcial), trigger saldo↔ledger | 50 cópias em paralelo, redelivery, crash entre commit e ack com processo real |
+| Idempotência apenas em memória | toda deduplicação está no PostgreSQL (`wager_transactions`, `inbox_messages`); nenhum `Map`/`Set` deduplica operações | `schema.test.ts`, `sqs-consumer.test.ts` |
+| Correta só com uma instância | nenhum estado em memória; locks e `SKIP LOCKED` no banco | 3 processos reais com SIGKILL sob carga HTTP e SQS |
+| Evento publicado antes do commit | eventos só saem pela outbox, lida por outro processo depois do commit | `outbox-and-pending.test.ts`, `atomicity.test.ts` |
+| Ausência de ledger auditável | ledger imutável (triggers), encadeado por versão, com reconciliação | `schema.test.ts`, invariante saldo == ledger ao fim de cada suíte |
+| Testes que trocam PostgreSQL e SQS por mocks | todos os testes de integração e concorrência usam PostgreSQL e MiniStack reais; falhas são injetadas por cima da infraestrutura real | `test/integration`, `test/concurrency` |
