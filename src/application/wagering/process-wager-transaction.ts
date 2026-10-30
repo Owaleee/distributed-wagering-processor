@@ -121,8 +121,8 @@ export class ProcessWagerTransaction {
     const reference = transaction.hasReference()
       ? await store.findTransactionByExternalId(transaction.providerId, transaction.referenceExternalTransactionId ?? "")
       : undefined;
-    const referenceAlreadyReversed =
-      reference !== undefined && transaction.requiresReference() ? await store.hasProcessedReversal(reference.id) : false;
+    // Vale para qualquer kind que referencia (REFUND, ROLLBACK e WIN): ver `decideWager`.
+    const referenceAlreadyReversed = reference !== undefined ? await store.hasProcessedReversal(reference.id) : false;
 
     const ctx = { transaction, wallet, reference, referenceAlreadyReversed };
     const decision = decideWager(ctx);
@@ -179,8 +179,8 @@ export class ProcessWagerTransaction {
       transaction.providerId,
       transaction.referenceExternalTransactionId ?? "",
     );
-    const referenceAlreadyReversed =
-      reference !== undefined && transaction.requiresReference() ? await store.hasProcessedReversal(reference.id) : false;
+    // Vale para qualquer kind que referencia (REFUND, ROLLBACK e WIN): ver `decideWager`.
+    const referenceAlreadyReversed = reference !== undefined ? await store.hasProcessedReversal(reference.id) : false;
     const ctx = { transaction, wallet, reference, referenceAlreadyReversed };
     let decision = decideWager(ctx);
 

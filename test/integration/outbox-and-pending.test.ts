@@ -260,6 +260,20 @@ describe("referências fora de ordem", () => {
     expect(await statusOf(rollback.body.transactionId)).toMatchObject({ status: "REJECTED", failure_code: "REFERENCE_STILL_PENDING" });
   });
 
+  test("WIN pendente cuja BET chega e é devolvida antes da reavaliação → ALREADY_REVERSED, sem crédito", async () => {
+    const wallet = await newWallet("100.00");
+    const bet = wagerPayload(wallet, "BET", "10.00");
+    const win = await client.submit(wagerPayload(wallet, "WIN", "50.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    expect(win.status).toBe(202);
+    await db.sql`update wager_transactions set next_attempt_at = now() + interval '1 hour' where id = ${win.body.transactionId}`;
+    await client.submit(bet);
+    await client.submit(wagerPayload(wallet, "REFUND", "10.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    await makeDue(win.body.transactionId);
+    await worker().processOne();
+    expect(await statusOf(win.body.transactionId)).toMatchObject({ status: "REJECTED", failure_code: "ALREADY_REVERSED" });
+    expect((await client.get(`/wallets/${wallet.id}`)).body.balance.amount).toBe("100.00");
+  });
+
   test("falha de infraestrutura em todas as tentativas → FAILED / PROCESSING_FAILED, auditável e com evento", async () => {
     const wallet = await newWallet("100.00");
     const refund = await client.submit(wagerPayload(wallet, "REFUND", "10.00", { referenceExternalTransactionId: "bet-x" }));

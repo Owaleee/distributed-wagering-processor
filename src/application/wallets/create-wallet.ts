@@ -63,9 +63,12 @@ export class CreateWallet {
     return this.uow.run(async (store) => {
       const existing = await store.findWalletByPlayer(command.playerId, initialBalance.currency);
       if (existing !== undefined) {
+        // O id volta no 409: quem reenvia a criação (ex.: depois de um timeout) descobre a wallet que já existe.
+        // É a wallet do próprio player do pedido; não expõe dados de outro provedor ou player.
         throw new WalletAlreadyExistsError("já existe wallet para este player nesta moeda", {
           playerId: command.playerId,
           currency: initialBalance.currency,
+          walletId: existing.id,
         });
       }
       const now = this.clock.now();

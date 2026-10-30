@@ -102,7 +102,7 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 | Erro inesperado (bug) | 500 | `INTERNAL_ERROR`, logado com stack |
 
 - **Replay:** responde com o **estado atual** da transação registrada, com `idempotentReplay: true`. Para uma transação terminal (PROCESSED, REJECTED, FAILED) o status e o corpo são os da primeira resposta, inclusive o saldo observado naquele momento. Uma `PENDING_REFERENCE` que já foi resolvida volta com o novo estado (202 → 200 ou 422): o provedor que reenvia quer saber o que aconteceu, e responder "pendente" para sempre seria mentir.
-- **O 409 não expõe ids internos.** `details.reason` diz o motivo (`PAYLOAD_MISMATCH`: mesma chave, payload diferente; `EXTERNAL_ID_REUSED`: mesmo `externalTransactionId` com outra chave). O provedor já sabe qual chave e qual id enviou.
+- **O 409 de idempotência não expõe ids internos.** `details.reason` diz o motivo (`PAYLOAD_MISMATCH`: mesma chave, payload diferente; `EXTERNAL_ID_REUSED`: mesmo `externalTransactionId` com outra chave). O provedor já sabe qual chave e qual id enviou. Já o 409 `WALLET_ALREADY_EXISTS` devolve o `walletId`: a criação de wallet não tem Idempotency-Key, e quem reenvia depois de um timeout precisa descobrir a wallet do próprio player.
 - **`DomainError` que escapa até o filtro é bug**, não payload inválido: os casos de uso já convertem entrada inválida em `ValidationError`. Por isso vira 500 e log de erro, em vez de se esconder atrás de um 400.
 - **400, 404 e 409** são logados (só código e campos com problema, nunca os valores enviados) e contados em `http_requests_rejected_total{code}`.
 - Todo erro usa o mesmo envelope `{ error: { code, message, details?, correlationId } }`.

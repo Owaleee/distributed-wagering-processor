@@ -46,6 +46,7 @@ describe("POST /wallets", () => {
     const dup = await client.createWallet("5.00", "BRL", wallet.playerId);
     expect(dup.status).toBe(409);
     expect(dup.body.error.code).toBe("WALLET_ALREADY_EXISTS");
+    expect(dup.body.error.details.walletId).toBe(wallet.id); // quem reenviou a criação descobre a wallet
     const other = await client.createWallet("5.00", "USD", wallet.playerId);
     expect(other.status).toBe(201);
   });
@@ -169,6 +170,17 @@ describe("POST /wagering/transactions", () => {
     const again = await client.submit(wagerPayload(wallet, "ROLLBACK", "40.00", { referenceExternalTransactionId: bet.externalTransactionId }));
     expect(again.status).toBe(422);
     expect(again.body.failureCode).toBe("ALREADY_REVERSED");
+  });
+
+  test("WIN que aponta para uma BET já devolvida → 422 ALREADY_REVERSED, sem crédito", async () => {
+    const wallet = await newWallet("100.00");
+    const bet = wagerPayload(wallet, "BET", "10.00");
+    await client.submit(bet);
+    await client.submit(wagerPayload(wallet, "REFUND", "10.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    const win = await client.submit(wagerPayload(wallet, "WIN", "50.00", { referenceExternalTransactionId: bet.externalTransactionId }));
+    expect(win.status).toBe(422);
+    expect(win.body.failureCode).toBe("ALREADY_REVERSED");
+    expect((await client.get(`/wallets/${wallet.id}`)).body.balance.amount).toBe("100.00");
   });
 
   test("ROLLBACK de WIN sem saldo → REVERSAL_INSUFFICIENT_FUNDS", async () => {
