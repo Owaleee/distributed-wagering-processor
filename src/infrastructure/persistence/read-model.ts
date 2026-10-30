@@ -1,5 +1,6 @@
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { MoneyProps } from "../../domain/money/money";
+import { hasNulByte } from "../../interface/text";
 import { translateDbError } from "./db-errors";
 
 export interface TransactionView {
@@ -72,6 +73,8 @@ export class ReadModel {
   }
 
   async transactionByExternalId(providerId: string, externalTransactionId: string): Promise<TransactionView | undefined> {
+    // Um id com byte nulo não pode existir no banco (e quebraria o protocolo do driver): não encontrado.
+    if (hasNulByte(providerId, externalTransactionId)) return undefined;
     const [row] = await this.query<TxRow>(
       `select * from wager_transactions where provider_id = ? and external_transaction_id = ?`,
       [providerId, externalTransactionId],

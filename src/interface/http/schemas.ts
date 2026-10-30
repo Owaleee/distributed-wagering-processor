@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { ValidationError } from "../../application/errors";
+import { contractText } from "../text";
 
 /**
  * Validação de formato dos contratos HTTP. Regras de dinheiro (escala, sinal, moeda) ficam no
  * `Money` do domínio, para valerem igualmente para HTTP e SQS.
  */
-const id = z.string().min(1).max(128);
+const id = contractText(128);
 const uuid = z.uuid();
 const money = z.object({ amount: z.string(), currency: z.string() }).strict();
 
@@ -27,7 +28,7 @@ export const wagerPayloadSchema = z
   })
   .strict();
 
-export const idempotencyKeySchema = z.string().min(1).max(256);
+export const idempotencyKeySchema = contractText(256);
 
 export const ledgerQuerySchema = z.object({
   cursor: z.string().max(200).optional(),

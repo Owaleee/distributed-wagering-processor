@@ -12,6 +12,7 @@ function run(exception: unknown) {
       res.statusCode = code;
       return response;
     },
+    headersSent: false,
     setHeader(name: string, value: string) {
       res.headers[name.toLowerCase()] = value;
     },
@@ -19,7 +20,7 @@ function run(exception: unknown) {
       res.payload = body;
     },
   };
-  const request = { method: "POST", path: "/wagering/transactions", correlationId: "corr-1" };
+  const request = { method: "POST", path: "/wagering/transactions", correlationId: "corr-1", header: () => undefined };
   const host = {
     switchToHttp: () => ({ getResponse: () => response, getRequest: () => request }),
   } as unknown as ArgumentsHost;

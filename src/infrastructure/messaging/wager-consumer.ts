@@ -8,6 +8,7 @@ import {
   type SQSClient,
 } from "@aws-sdk/client-sqs";
 import { z } from "zod";
+import { contractText } from "../../interface/text";
 import { ApplicationError, TransientInfrastructureError } from "../../application/errors";
 import type { Logger, Metrics } from "../../application/observability";
 import type { Clock, UnitOfWork } from "../../application/ports";
@@ -18,22 +19,22 @@ import { createHash } from "node:crypto";
 
 /** Envelope da mensagem `WagerTransactionRequested` (README, seção 10). */
 const messageSchema = z.object({
-  messageId: z.string().min(1).max(256),
+  messageId: contractText(256),
   type: z.literal("WagerTransactionRequested"),
   occurredAt: z.string().min(1),
-  correlationId: z.string().min(1).max(128).optional(),
+  correlationId: contractText(128).optional(),
   data: z
     .object({
-      providerId: z.string().min(1).max(128),
-      externalTransactionId: z.string().min(1).max(128),
-      idempotencyKey: z.string().min(1).max(256),
+      providerId: contractText(128),
+      externalTransactionId: contractText(128),
+      idempotencyKey: contractText(256),
       playerId: z.uuid(),
       walletId: z.uuid(),
-      roundId: z.string().min(1).max(128),
-      gameId: z.string().min(1).max(128),
+      roundId: contractText(128),
+      gameId: contractText(128),
       kind: z.enum(["BET", "WIN", "LOSS", "REFUND", "ROLLBACK"]),
       money: z.object({ amount: z.string(), currency: z.string() }).strict(),
-      referenceExternalTransactionId: z.string().min(1).max(128).optional(),
+      referenceExternalTransactionId: contractText(128).optional(),
     })
     .strict(),
 });

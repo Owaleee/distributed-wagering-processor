@@ -28,6 +28,9 @@ export function translateDbError(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
   const e = error as Error & PgLikeError;
   const state = e.sqlState ?? e.code;
+  // 08P01 (protocol_violation) é da classe de conexão, mas é causado pelo que foi enviado
+  // (ex.: byte nulo num parâmetro): reenviar não resolve. Sobe como erro inesperado (500), para aparecer.
+  if (state === "08P01") return error;
   if (state === "23505") {
     return new UniqueConflictError(e.constraint ?? /constraint "([^"]+)"/.exec(e.message)?.[1]);
   }

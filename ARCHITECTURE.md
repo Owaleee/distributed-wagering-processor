@@ -99,13 +99,15 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 | Wallet/transação inexistente | 404 | `WALLET_NOT_FOUND` / `TRANSACTION_NOT_FOUND` |
 | Conflito de idempotência / wallet duplicada | 409 | `IDEMPOTENCY_CONFLICT` (com `details.reason`) / `WALLET_ALREADY_EXISTS` |
 | Falha transitória (lock, pool, banco fora) | 503 + `Retry-After` | `TRANSIENT_FAILURE` — reenviar com a mesma key é seguro |
+| Corpo grande demais (> 100 KB) | 413 | `PAYLOAD_TOO_LARGE` |
 | Erro inesperado (bug) | 500 | `INTERNAL_ERROR`, logado com stack |
 
 - **Replay:** responde com o **estado atual** da transação registrada, com `idempotentReplay: true`. Para uma transação terminal (PROCESSED, REJECTED, FAILED) o status e o corpo são os da primeira resposta, inclusive o saldo observado naquele momento. Uma `PENDING_REFERENCE` que já foi resolvida volta com o novo estado (202 → 200 ou 422): o provedor que reenvia quer saber o que aconteceu, e responder "pendente" para sempre seria mentir.
 - **O 409 de idempotência não expõe ids internos.** `details.reason` diz o motivo (`PAYLOAD_MISMATCH`: mesma chave, payload diferente; `EXTERNAL_ID_REUSED`: mesmo `externalTransactionId` com outra chave). O provedor já sabe qual chave e qual id enviou. Já o 409 `WALLET_ALREADY_EXISTS` devolve o `walletId`: a criação de wallet não tem Idempotency-Key, e quem reenvia depois de um timeout precisa descobrir a wallet do próprio player.
 - **`DomainError` que escapa até o filtro é bug**, não payload inválido: os casos de uso já convertem entrada inválida em `ValidationError`. Por isso vira 500 e log de erro, em vez de se esconder atrás de um 400.
 - **400, 404 e 409** são logados (só código e campos com problema, nunca os valores enviados) e contados em `http_requests_rejected_total{code}`.
-- Todo erro usa o mesmo envelope `{ error: { code, message, details?, correlationId } }`.
+- Todo erro usa o mesmo envelope `{ error: { code, message, details?, correlationId } }`, inclusive os do parser do corpo (JSON inválido, corpo grande demais), que acontecem antes do middleware de correlação.
+- **Texto com byte nulo (U+0000) é payload inválido** em qualquer campo, no HTTP e na fila: o PostgreSQL não guarda esse caractere em texto. Achado pelo fuzz de entradas (`hostile-input.test.ts`).
 
 ### D14 — Reconciliação
 - Lê a wallet com `FOR SHARE` (nenhum movimento entra no meio da contagem) e soma o ledger em `NUMERIC` no próprio PostgreSQL.
@@ -119,7 +121,7 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Lock demorado:** `lock_timeout` por transação (`LOCK_TIMEOUT_MS`, padrão 5 s). Estourou → 503 e a métrica `wager_lock_conflicts_total{kind="lock_timeout"}`.
 - **Pool sem conexão livre:** `connectionTimeoutMillis` do pool (`DB_CONNECT_TIMEOUT_MS`, padrão 5 s). Sem ele, sob saturação a requisição esperaria indefinidamente. O erro do pool é classificado como transitório.
 - **Banco fora do ar:** POST e GET → 503; `/health/ready` → 503 com `postgres: "down"`; `/health/live` continua 200 (o processo está bem, não deve ser reiniciado). Quando o banco volta, a aplicação se recupera sozinha.
-- **Classificação** (`db-errors.ts`): unicidade concorrente → releitura (replay/409); lock timeout, deadlock, serialização, conexão e pool → transitório; o resto sobe como erro inesperado (500), porque pode ser bug ou violação de invariante e deve aparecer.
+- **Classificação** (`db-errors.ts`): unicidade concorrente → releitura (replay/409); lock timeout, deadlock, serialização, conexão e pool → transitório; o resto sobe como erro inesperado (500), porque pode ser bug ou violação de invariante e deve aparecer. A exceção é o `08P01` (protocol_violation): está na classe de conexão, mas é causado pelo que foi enviado, então **não** é transitório; um 503 ali faria o provedor reenviar para sempre.
 - **Dependência corrigida — `kysely` fixado em 0.29.7 (`overrides` no `package.json`).** O MikroORM 7.2.5 exige o kysely 0.29.6, que tem um vazamento: se o `BEGIN` falha (conexão morta reaproveitada do pool depois de uma queda do banco), a conexão nunca é devolvida. O teste de queda reproduz: com a 0.29.6, 6 de 7 conexões ficam presas depois de uma única queda e a aplicação trava ao desligar; com a 0.29.7, que corrige exatamente esse caminho, nenhuma. Em produção, oscilações repetidas esgotariam o pool. Quando o MikroORM passar a depender da versão corrigida, o `overrides` pode sair.
 - **Evidência:** `test/integration/infrastructure-failures.test.ts` (lock timeout, pool esgotado, banco fora e vazamento de conexão, este com um proxy TCP que derruba o banco sem avisar a aplicação).
 

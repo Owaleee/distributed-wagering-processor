@@ -24,7 +24,10 @@ export class HttpErrorsFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const res = http.getResponse<Response>();
     const req = http.getRequest<Request & { correlationId?: string }>();
-    const correlationId = req.correlationId;
+    // Erros do parser do corpo (JSON inválido, corpo grande demais) acontecem antes do middleware de
+    // correlação: o id é criado aqui, para que TODO erro tenha correlationId no corpo e no header.
+    const correlationId = req.correlationId ?? correlationFrom(req);
+    if (!res.headersSent) res.setHeader("x-correlation-id", correlationId);
     const route = `${req.method} ${req.route?.path ?? req.path}`;
 
     if (exception instanceof ApplicationError) {
@@ -44,7 +47,7 @@ export class HttpErrorsFilter implements ExceptionFilter {
     }
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
-      const code = status === 404 ? "ROUTE_NOT_FOUND" : status === 400 ? "INVALID_PAYLOAD" : "HTTP_ERROR";
+      const code = HTTP_CODES[status] ?? "HTTP_ERROR";
       if (status < 500) this.metrics.requestRejected(code);
       res.status(status).json(body(code, exception.message, undefined, correlationId));
       return;
@@ -57,6 +60,19 @@ export class HttpErrorsFilter implements ExceptionFilter {
     });
     res.status(500).json(body("INTERNAL_ERROR", "erro interno", undefined, correlationId));
   }
+}
+
+const HTTP_CODES: Record<number, string> = {
+  400: "INVALID_PAYLOAD",
+  404: "ROUTE_NOT_FOUND",
+  405: "METHOD_NOT_ALLOWED",
+  413: "PAYLOAD_TOO_LARGE",
+  415: "UNSUPPORTED_MEDIA_TYPE",
+};
+
+function correlationFrom(req: Request): string {
+  const incoming = req.header("x-correlation-id");
+  return incoming !== undefined && /^[\w.:-]{1,128}$/.test(incoming) ? incoming : crypto.randomUUID();
 }
 
 function fieldsOf(error: ApplicationError): string[] | undefined {
