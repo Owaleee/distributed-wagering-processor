@@ -74,7 +74,11 @@ export class AppModule implements NestModule {
           inject: [MikroORM],
           useFactory: (orm: MikroORM) => new MikroOrmUnitOfWork(orm, { lockTimeoutMs: config.lockTimeoutMs }),
         },
-        { provide: READ_MODEL, inject: [MikroORM], useFactory: (orm: MikroORM) => new ReadModel(orm) },
+        {
+          provide: READ_MODEL,
+          inject: [MikroORM],
+          useFactory: (orm: MikroORM) => new ReadModel(orm, { lockTimeoutMs: config.lockTimeoutMs }),
+        },
         {
           provide: PROCESS_WAGER,
           inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, METRICS],

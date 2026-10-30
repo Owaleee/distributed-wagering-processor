@@ -275,7 +275,9 @@ export class WagerConsumer {
     } catch (error) {
       if (error instanceof ApplicationError && error.category !== "transient") {
         // Payload inválido, wallet inexistente, conflito de idempotência: reenviar não resolve.
-        this.logger.warn("mensagem com erro permanente", { ...fields, code: error.code, error: error.message });
+        // Como no HTTP: só o código e os campos com problema no log, nunca os valores enviados.
+        // A mensagem completa segue para a DLQ (atributo failureDetail), onde a operação investiga.
+        this.logger.warn("mensagem com erro permanente", { ...fields, code: error.code, fields: fieldsOf(error) });
         return { kind: "dlq", reason: error.code, message: error.message };
       }
       if (error instanceof TransientInfrastructureError || error instanceof ApplicationError) {
@@ -331,6 +333,13 @@ export class WagerConsumer {
     }
     return message.MessageId ?? "unknown";
   }
+}
+
+function fieldsOf(error: ApplicationError): string[] | undefined {
+  const issues = error.details?.issues;
+  if (Array.isArray(issues)) return issues.map((i: { path?: string }) => i.path ?? "");
+  const field = error.details?.field;
+  return typeof field === "string" ? [field] : undefined;
 }
 
 function errorMessage(error: unknown): string {

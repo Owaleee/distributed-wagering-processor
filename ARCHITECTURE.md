@@ -110,7 +110,7 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Texto com byte nulo (U+0000) é payload inválido** em qualquer campo, no HTTP e na fila: o PostgreSQL não guarda esse caractere em texto. Achado pelo fuzz de entradas (`hostile-input.test.ts`).
 
 ### D14 — Reconciliação
-- Lê a wallet com `FOR SHARE` (nenhum movimento entra no meio da contagem) e soma o ledger em `NUMERIC` no próprio PostgreSQL.
+- Lê a wallet com `FOR SHARE` (nenhum movimento entra no meio da contagem) e soma o ledger em `NUMERIC` no próprio PostgreSQL. A espera por esse lock tem o mesmo `lock_timeout` das escritas: numa wallet travada, responde 503 em vez de ficar pendurada segurando uma conexão.
 - Divergência → log `error`, métrica `wallet_reconciliation_divergences_total` e `consistent: false` na resposta. Nada é corrigido automaticamente: a correção de saldo é uma decisão humana e auditável.
 
 ### D15 — Autenticação: não implementada (ponto de extensão explícito)

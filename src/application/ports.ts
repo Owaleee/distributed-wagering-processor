@@ -22,7 +22,7 @@ export interface RetrySchedule {
   /** Tentativas de encontrar a referência já feitas. */
   attempts: number;
   nextAttemptAt: Date;
-  /** Falhas de infraestrutura ao reavaliar (contagem separada; ver D18). */
+  /** Falhas de infraestrutura ao reavaliar (contagem separada; ver D19). */
   processingFailures?: number;
 }
 

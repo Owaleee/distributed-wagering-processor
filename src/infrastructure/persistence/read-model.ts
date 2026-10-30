@@ -53,7 +53,11 @@ export interface ReconciliationSnapshot {
  * e o SQL deixa explícito o que é lido (ordem estável do ledger, soma da reconciliação).
  */
 export class ReadModel {
-  constructor(private readonly orm: MikroORM) {}
+  /** `lockTimeoutMs`: espera máxima pelo `FOR SHARE` da reconciliação (o mesmo limite das escritas; estourou → 503). */
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly options: { lockTimeoutMs: number } = { lockTimeoutMs: 5_000 },
+  ) {}
 
   async wallet(walletId: string): Promise<WalletRow | undefined> {
     if (!UUID.test(walletId)) return undefined;
@@ -119,6 +123,7 @@ export class ReadModel {
     if (!UUID.test(walletId)) return undefined;
     try {
       return await this.orm.em.fork().transactional(async (em) => {
+        await em.execute(`set local lock_timeout = ${Math.trunc(this.options.lockTimeoutMs)}`);
         const rows = await em.execute<{ balance: string; currency: string }[]>(
           `select balance, currency from wallets where id = ? for share`,
           [walletId],

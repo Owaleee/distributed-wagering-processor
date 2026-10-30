@@ -39,18 +39,23 @@ Sobem PostgreSQL 16, MiniStack (emulador de SQS, sem conta nem token), o serviç
 | `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta por id do provedor |
 | `GET /health/live`, `GET /health/ready`, `GET /metrics` | Saúde e métricas Prometheus |
 
-Exemplo:
+Exemplo (ids gerados na hora, então pode ser repetido):
 ```bash
-WALLET=$(curl -s localhost:3001/wallets -H 'content-type: application/json' \
-  -d '{"playerId":"0b9f4d1e-6a51-4c39-9a76-1d1f8c2b7e10","initialBalance":{"amount":"100.00","currency":"BRL"}}')
-WALLET_ID=$(echo "$WALLET" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+PLAYER=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)
+WALLET_ID=$(curl -s localhost:3001/wallets -H 'content-type: application/json' \
+  -d "{\"playerId\":\"$PLAYER\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}" \
+  | sed -E 's/.*"id":"([^"]+)".*/\1/')
 
-curl -s localhost:3001/wagering/transactions -H 'content-type: application/json' -H 'Idempotency-Key: provider-a:bet-1' \
-  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"bet-1\",\"playerId\":\"0b9f4d1e-6a51-4c39-9a76-1d1f8c2b7e10\",
+BET="bet-$(date +%s)"
+curl -s localhost:3002/wagering/transactions -H 'content-type: application/json' -H "Idempotency-Key: provider-a:$BET" \
+  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"$BET\",\"playerId\":\"$PLAYER\",
        \"walletId\":\"$WALLET_ID\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"BET\",
        \"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}"
 # → 200 {"transactionId":"…","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":false}
+# Repetir o mesmo curl (mesma chave, mesmo corpo) → mesma resposta, com "idempotentReplay":true
 ```
+Para conferir tudo de uma vez (3 instâncias prontas, HTTP, replay, SQS, outbox e reconciliação): `bun run smoke`.
+
 Valores sempre como string com 2 casas (`"25.00"`). Status de resposta e códigos de falha: [`ARCHITECTURE.md`](./ARCHITECTURE.md#d13--mapeamento-http).
 
 ### Pela fila SQS
@@ -75,7 +80,7 @@ bun test
 O GitHub Actions roda o typecheck, todos os testes e um `docker compose up` do zero a cada push.
 
 ## Testes
-Com PostgreSQL e MiniStack no ar (`docker compose up -d postgres ministack`):
+Com PostgreSQL e MiniStack no ar (`docker compose up -d postgres ministack`). Se você mudou as portas do compose, aponte os testes para elas: `TEST_DATABASE_ADMIN_URL=postgresql://postgres:postgres@localhost:5433/postgres SQS_ENDPOINT=http://localhost:4567 bun test`.
 
 | Comando | O que roda |
 |---|---|
@@ -83,6 +88,7 @@ Com PostgreSQL e MiniStack no ar (`docker compose up -d postgres ministack`):
 | `bun run test:integration` | API, schema e constraints, atomicidade, consumidor SQS (inbox, retry, DLQ, SIGTERM, crash entre commit e ack com processo real), outbox, pendências, falhas de infraestrutura (lock, pool, banco fora), **teste baseado em modelo** e **entradas hostis** |
 | `bun run test:concurrency` | 100/80/80, 50 cópias em paralelo, hot wallet, 3 processos reais com SIGKILL sob carga HTTP e SQS, e **caos** (HTTP + SQS + duplicatas + fora de ordem + SIGKILL) |
 | `bun test` | tudo |
+| `bun run smoke` | smoke de ponta a ponta contra a stack do compose (o CI roda contra os containers) |
 | `bun run test:load` | teste de carga contra a stack do compose (ver `LOAD_TEST.md`) |
 
 Os testes de integração e de concorrência usam **PostgreSQL e MiniStack reais**, nunca mocks: cada suíte cria um banco e filas próprios. Toda suíte termina com um **verificador de invariantes** que procura no banco estados impossíveis (saldo negativo, saldo diferente do ledger, corrente do ledger quebrada, transação com lançamento a mais ou a menos, reversão dupla, crédito em dobro, evento faltando na outbox…).

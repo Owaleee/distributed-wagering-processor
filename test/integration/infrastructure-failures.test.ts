@@ -69,6 +69,16 @@ describe("lock demorado", () => {
     const metrics = await fetch(`${app.baseUrl}/metrics`).then((r) => r.text());
     expect(metrics).toMatch(/wager_lock_conflicts_total\{kind="lock_timeout"\} [1-9]/);
   });
+
+  test("a reconciliação também respeita o lock_timeout (503 em vez de ficar pendurada)", async () => {
+    const client = api(app.baseUrl);
+    const wallet = (await client.createWallet("50.00")).body;
+    const lock = await holdWalletLock(wallet.id);
+    const res = await client.post(`/wallets/${wallet.id}/reconciliation`);
+    await lock.release();
+    expect(res.status).toBe(503);
+    expect((await client.post(`/wallets/${wallet.id}/reconciliation`)).body.consistent).toBe(true);
+  });
 });
 
 describe("pool sem conexão livre", () => {
