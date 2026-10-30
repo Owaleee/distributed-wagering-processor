@@ -9,12 +9,15 @@ export interface OrmOptions {
    * esperaria indefinidamente; com isso, ela falha como transitória (503) e o provedor reenvia.
    */
   connectTimeoutMs?: number;
+  /** Para onde vão as mensagens do próprio MikroORM (padrão: console). A aplicação usa o log JSON. */
+  logWriter?: (message: string) => void;
 }
 
 export function buildOrmConfig(databaseUrl: string, options: OrmOptions = {}) {
   return defineConfig({
     clientUrl: databaseUrl,
     entities: ALL_ENTITIES,
+    ...(options.logWriter !== undefined ? { logger: options.logWriter } : {}),
     extensions: [Migrator],
     migrations: {
       migrationsList,

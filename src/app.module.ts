@@ -16,7 +16,7 @@ import { SqsEventPublisher } from "./infrastructure/messaging/sqs-event-publishe
 import { WagerConsumer } from "./infrastructure/messaging/wager-consumer";
 import { OutboxRelay } from "./infrastructure/workers/outbox-relay";
 import { PendingReferenceWorker } from "./infrastructure/workers/pending-reference-worker";
-import { JsonLogger } from "./infrastructure/observability/json-logger";
+import { JsonLogger, mikroOrmLogWriter } from "./infrastructure/observability/json-logger";
 import { PromMetrics } from "./infrastructure/observability/prom-metrics";
 import { buildOrmConfig } from "./infrastructure/persistence/mikro-orm.config";
 import { MikroOrmUnitOfWork } from "./infrastructure/persistence/mikro-orm-unit-of-work";
@@ -32,6 +32,9 @@ import { WageringController } from "./interface/http/wagering.controller";
 import { WalletsController } from "./interface/http/wallets.controller";
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
+
+/** Logger raiz: a aplicação, o Nest e o MikroORM escrevem no mesmo formato JSON. */
+export const appLogger = new JsonLogger({ service: "distributed-wagering-processor" });
 export const SQS_CLIENT = Symbol("SQS_CLIENT");
 export const QUEUE_URLS = Symbol("QUEUE_URLS");
 export const WAGER_CONSUMER = Symbol("WAGER_CONSUMER");
@@ -51,14 +54,17 @@ export class AppModule implements NestModule {
       module: AppModule,
       imports: [
         MikroOrmModule.forRoot({
-          ...buildOrmConfig(config.databaseUrl, { connectTimeoutMs: config.dbConnectTimeoutMs }),
+          ...buildOrmConfig(config.databaseUrl, {
+            connectTimeoutMs: config.dbConnectTimeoutMs,
+            logWriter: mikroOrmLogWriter(appLogger),
+          }),
           registerRequestContext: false,
         }),
       ],
       controllers: [HealthController, WalletsController, WageringController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
-        { provide: LOGGER, useValue: new JsonLogger({ service: "distributed-wagering-processor" }) },
+        { provide: LOGGER, useValue: appLogger },
         { provide: PROM_METRICS, useValue: new PromMetrics() },
         { provide: METRICS, useExisting: PROM_METRICS },
         { provide: CLOCK, useValue: { now: () => new Date() } satisfies Clock },

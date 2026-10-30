@@ -1,10 +1,11 @@
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
-import { AppModule } from "./app.module";
+import { AppModule, appLogger } from "./app.module";
 import { loadConfig } from "./infrastructure/config";
+import { NestJsonLogger } from "./infrastructure/observability/json-logger";
 
 const config = loadConfig();
-const app = await NestFactory.create(AppModule.forRoot(config), { logger: ["error", "warn"] });
+const app = await NestFactory.create(AppModule.forRoot(config), { logger: new NestJsonLogger(appLogger) });
 await app.listen(config.port);
 
 /**

@@ -307,6 +307,26 @@ describe("reconciliação", () => {
   });
 });
 
+describe("contrato de observabilidade", () => {
+  test("/metrics expõe todas as métricas exigidas", async () => {
+    const text = await fetch(`${app.baseUrl}/metrics`).then((r) => r.text());
+    for (const name of [
+      "wager_transactions_total", // transações por status e origem
+      "wager_duplicates_detected_total", // duplicatas (replay de idempotência e inbox)
+      "wager_retries_total", // novas tentativas (SQS, outbox, pendências)
+      "wager_dlq_messages_total", // envios para a DLQ pelo consumidor
+      "wager_dlq_depth", // profundidade real da DLQ (inclui redrive)
+      "wager_lock_conflicts_total", // lock timeout e unicidade concorrente
+      "outbox_lag_seconds", // idade do evento pendente mais antigo
+      "wager_processing_seconds", // latência
+      "http_requests_rejected_total", // 400/404/409
+      "wallet_reconciliation_divergences_total",
+    ]) {
+      expect(text).toContain(`# TYPE ${name} `);
+    }
+  });
+});
+
 describe("health", () => {
   test("live e ready", async () => {
     expect((await client.get("/health/live")).body).toEqual({ status: "ok" });

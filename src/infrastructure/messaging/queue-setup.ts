@@ -46,8 +46,14 @@ export async function ensureQueues(sqs: SQSClient, config: AppConfig): Promise<Q
  * se uma fila faltar, o boot falha com erro claro em vez de criar uma fila com atributos errados.
  */
 export async function resolveQueues(sqs: SQSClient, config: AppConfig): Promise<QueueUrls> {
-  const url = async (name: string) =>
-    required((await sqs.send(new GetQueueUrlCommand({ QueueName: name }))).QueueUrl, name);
+  const url = async (name: string) => {
+    try {
+      return required((await sqs.send(new GetQueueUrlCommand({ QueueName: name }))).QueueUrl, name);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`fila SQS "${name}" não encontrada (${reason}). Rode o setup antes: bun run setup`, { cause: error });
+    }
+  };
   const [wagerQueueUrl, wagerDlqUrl, eventsQueueUrl] = await Promise.all([
     url(config.sqs.wagerQueueName),
     url(config.sqs.wagerDlqName),

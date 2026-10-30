@@ -178,6 +178,27 @@ As instâncias não se coordenam entre si. Todas as garantias de unicidade, imut
 - **Encerramento:** o `main.ts` trata SIGTERM/SIGINT chamando `app.close()`, que dispara os hooks de shutdown na ordem certa (os processos de fundo param antes do ORM fechar), e sai com 0. Há um limite rígido de 25 s para não travar um deploy.
 - **Relógio:** as datas de agendamento vêm do Clock da aplicação (milissegundos). Comparações com `now()` do PostgreSQL (microssegundos) são evitadas no código; nos testes, "vencido" é marcado no passado para não depender do mesmo milissegundo.
 
+### D21 — Observabilidade
+- **Logs:** uma linha JSON por evento em stdout (`time`, `level`, `msg`, `service`). A aplicação, o NestJS (`component: "nest"`) e o MikroORM (`component: "mikro-orm"`) escrevem no mesmo formato; um erro de boot também sai em JSON, com stack. `LOG_LEVEL` = `info` (padrão), `warn`, `error` ou `silent`.
+- **Campos de correlação**, quando existem: `correlationId` (header `X-Correlation-Id` ou gerado; nas mensagens, o do envelope), `messageId`, `transactionId`, `walletId`, `providerId`. O `correlationId` também volta no corpo de todo erro HTTP e segue nos eventos publicados (`causationId` aponta para a mensagem ou requisição de origem).
+- **O que nunca vai para o log:** payload completo e valores enviados em requisições inválidas (só o código e os campos com problema, D13).
+
+| Métrica (`GET /metrics`, Prometheus) | O que mostra |
+|---|---|
+| `wager_transactions_total{status,source}` | transações por status final e origem (http, sqs, worker) |
+| `wager_duplicates_detected_total{kind}` | duplicatas: replay de idempotência e redelivery na inbox |
+| `wager_retries_total{kind}` | novas tentativas: SQS, outbox, pendências |
+| `wager_dlq_messages_total{reason}` / `wager_dlq_depth` | envios para a DLQ pelo consumidor / profundidade real da DLQ (inclui o redrive) |
+| `wager_lock_conflicts_total{kind}` | lock timeout e unicidade concorrente |
+| `outbox_lag_seconds` | idade do evento ainda não publicado mais antigo |
+| `wager_processing_seconds{source}` | latência do processamento (histograma) |
+| `http_requests_rejected_total{code}` | requisições recusadas (400, 404, 409) |
+| `wallet_reconciliation_divergences_total` | reconciliações com divergência |
+
+- **Health:** `/health/live` (processo vivo, não toca dependências) e `/health/ready` (PostgreSQL e as três filas).
+- **Alertas sugeridos:** `wager_dlq_depth > 0`; `outbox_lag_seconds` crescendo; taxa de `wager_lock_conflicts_total{kind="lock_timeout"}`; `wallet_reconciliation_divergences_total` aumentando (sempre investigar).
+- **Evidência:** `test/unit/json-logger.test.ts` (formato, níveis, Nest e MikroORM) e o teste "contrato de observabilidade" em `test/integration/api.test.ts` (todas as métricas presentes).
+
 ## Máquina de estados de `WagerTransaction`
 
 ```
