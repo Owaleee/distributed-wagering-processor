@@ -49,61 +49,11 @@ O `bun run smoke` faz o que você faria à mão: confere que as 3 instâncias es
 
 ### Visão geral
 
-```mermaid
-flowchart LR
-    P["Provedores de jogos"] -->|"HTTP POST /wagering/transactions"| LB(("3001 · 3002 · 3003"))
-    P -->|"mensagem WagerTransactionRequested"| Q[["SQS wager-transactions.fifo"]]
-    Q -.->|"erro permanente ou tentativas esgotadas"| DLQ[["SQS wager-transactions-dlq.fifo"]]
-
-    subgraph APP["3 instâncias idênticas (sem estado em memória)"]
-        API["API HTTP"]
-        CON["Consumidor SQS"]
-        UC{{"Caso de uso: processar a operação<br/>(o mesmo para HTTP e SQS)"}}
-        REL["Publicador da outbox"]
-        WRK["Worker de pendências"]
-        API --> UC
-        CON --> UC
-    end
-
-    LB --> API
-    Q --> CON
-    UC -->|"uma transação SQL"| DB[("PostgreSQL<br/>wallets · transações · ledger<br/>inbox · outbox")]
-    WRK -->|"reavalia operações fora de ordem"| DB
-    REL -->|"lê eventos já confirmados"| DB
-    REL --> EV[["SQS wallet-events.fifo"]]
-```
+Os provedores enviam operações por HTTP (para qualquer uma das 3 instâncias) ou pela fila `wager-transactions.fifo`. Nas duas entradas, o mesmo caso de uso processa a operação e grava tudo no PostgreSQL numa única transação. Em segundo plano, cada instância também roda um publicador, que envia os eventos confirmados para a fila `wallet-events.fifo`, e um worker, que reavalia as operações que chegaram fora de ordem. Mensagens inválidas, ou que falham em todas as tentativas, vão para a DLQ `wager-transactions-dlq.fifo`.
 
 As três instâncias não conversam entre si: **todas as garantias ficam no PostgreSQL** (locks, constraints, triggers). Por isso dá para ter 1, 3 ou 30 cópias sem mudar nada.
 
 ### O caminho de uma aposta
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant P as Provedor
-    participant A as Instância (HTTP ou fila)
-    participant DB as PostgreSQL
-    participant R as Publicador da outbox
-    participant E as Fila de eventos
-
-    P->>A: BET 25.00 (Idempotency-Key: provider-a:bet-1)
-    A->>DB: BEGIN · trava a wallet (SELECT … FOR UPDATE)
-    Note over A,DB: outra operação da MESMA wallet espera aqui,<br/>wallets diferentes seguem em paralelo
-    A->>DB: essa chave já foi usada por este provedor?
-    alt já foi, com o mesmo conteúdo
-        DB-->>A: transação gravada
-        A-->>P: mesma resposta de antes, idempotentReplay: true
-    else nova
-        A->>A: aplica as regras (saldo, moeda, referência…)
-        A->>DB: grava transação + saldo + lançamento no ledger + eventos na outbox
-        A->>DB: COMMIT (tudo junto ou nada)
-        A-->>P: 200 PROCESSED, saldo 75.00
-        R->>DB: busca eventos ainda não publicados
-        R->>E: publica WagerTransactionProcessed e WalletBalanceChanged
-    end
-```
-
-Em palavras:
 
 1. **Trava a wallet.** Antes de qualquer verificação, a transação SQL trava a linha da wallet. Duas cópias da mesma aposta, ou duas apostas disputando o mesmo saldo, entram em fila no banco; a segunda só lê depois que a primeira confirmou.
 2. **Confere a idempotência.** A `Idempotency-Key` é única por provedor. Se ela já existe com o mesmo conteúdo (comparado por um hash), devolve o resultado original, inclusive o saldo daquele momento. Se existe com outro conteúdo, responde 409.
