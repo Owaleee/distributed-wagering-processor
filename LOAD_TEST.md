@@ -30,12 +30,28 @@ Tudo divide as mesmas 2 vCPUs, então os números medem o comportamento **relati
 
 ## Resultados (30/10/2026, código final)
 
+Medidos depois da bateria final de testes (oráculo, caos e fuzz), com estado limpo em cada cenário:
+
 | Cenário | Requisições | Vazão | p50 | p95 | p99 | Erros 5xx | Erros de rede | Conflitos de lock | Outbox lag (máx / média) | Drenagem após a carga | Divergências |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 10% na hot wallet | 3 943 | 129.0 req/s | 201 ms | 2 641 ms | 4 432 ms | 0 | 1 (0.03%) | 0 | 14.9 s / 7.2 s | 24.1 s | 0 de 101 |
-| sem hot wallet | 4 101 | 135.5 req/s | 447 ms | 991 ms | 1 315 ms | 0 | 0 | 0 | 19.8 s / 10.1 s | 36.6 s | 0 de 101 |
+| 10% na hot wallet | 5 047 | 164.7 req/s | 148 ms | 2 213 ms | 3 578 ms | 0 | 0 | 0 | 1.2 s / 0.35 s | 1.2 s | 0 de 101 |
+| sem hot wallet | 4 914 | 162.3 req/s | 357 ms | 936 ms | 1 186 ms | 0 | 0 | 0 | 13.0 s / 6.2 s | 14.9 s | 0 de 101 |
 
-Na rodada com hot wallet, as requisições à hot wallet tiveram p50 de 2 596 ms e p95 de 4 823 ms.
+Na rodada com hot wallet, as requisições à hot wallet tiveram p50 de 2 122 ms e p95 de 3 932 ms.
+
+## Memória (teste de resistência)
+
+Quatro cargas seguidas de 25 s sobre as **mesmas** 3 instâncias, sem reiniciar, medindo a memória residente (RSS) somada das instâncias 5 s depois de cada rodada:
+
+| Momento | Requisições na rodada | RSS das 3 instâncias | Divergências |
+|---|---|---|---|
+| início (ociosas) | — | 289 MB | — |
+| após a rodada 1 | 3 123 | 430 MB | 0 |
+| após a rodada 2 | 3 868 | 444 MB | 0 |
+| após a rodada 3 | 4 060 | 439 MB | 0 |
+| após a rodada 4 | 4 062 | 450 MB | 0 |
+
+A memória sobe na primeira carga (aquecimento do JIT, pool de conexões e heap) e depois se estabiliza em torno de 145 MB por instância: sem sinal de vazamento em ~15 000 requisições.
 
 ## Otimização da outbox encontrada na medição
 
@@ -53,10 +69,10 @@ Comparação em sequência, mesmas condições (cenário com hot wallet):
 
 ## Análise
 
-- **Correção sob carga:** ~8 000 operações nos dois cenários, incluindo 770 replays, sem nenhuma divergência entre saldo e ledger e sem nenhum erro 5xx. Os replays devolveram o resultado original.
+- **Correção sob carga:** ~10 000 operações nos dois cenários, incluindo ~1 000 replays, sem nenhuma divergência entre saldo e ledger e sem nenhum erro 5xx. Os replays devolveram o resultado original.
 - **A vazão é limitada pela CPU compartilhada,** não pelos locks: com ou sem hot wallet ela fica na mesma faixa. Cada operação faz um commit com 4 a 6 escritas mais o trigger adiado, e o PostgreSQL divide 2 vCPUs com todo o resto.
-- **A hot wallet mostra o custo do lock pessimista.** As operações da mesma wallet entram em fila, e numa carga em laço fechado os clientes se acumulam nela: p95 de ~4.8 s. A cauda das outras requisições também sobe (p95 de 1.0 s para 2.6 s), porque quem espera o lock **ocupa uma conexão do pool** e as demais esperam conexão. A latência do cliente inclui essa espera por conexão, por isso o p99 da hot wallet passa de 5 s sem nenhum `lock_timeout` (0 conflitos): a espera pelo lock em si ficou abaixo do limite.
-- **O atraso da outbox** é a métrica que mais sofre neste ambiente: o publicador disputa a CPU com a carga, e o MiniStack (escrito em Python) processa cada `SendMessageBatch`. Nenhum evento se perdeu, e todos foram publicados depois da carga.
+- **A hot wallet mostra o custo do lock pessimista.** As operações da mesma wallet entram em fila, e numa carga em laço fechado os clientes se acumulam nela: p95 de ~4.8 s. A cauda das outras requisições também sobe (p95 de 0.9 s para 2.2 s), porque quem espera o lock **ocupa uma conexão do pool** e as demais esperam conexão. A latência do cliente inclui essa espera por conexão, por isso o p99 da hot wallet pode passar de 5 s sem nenhum `lock_timeout` (0 conflitos): a espera pelo lock em si fica abaixo do limite.
+- **O atraso da outbox** é a métrica que mais varia neste ambiente (de 1 s a 20 s entre rodadas): o publicador disputa a CPU com a carga, e o MiniStack (escrito em Python) processa cada `SendMessageBatch`. Nenhum evento se perdeu, e todos foram publicados depois da carga.
 - **Erros de rede:** no máximo 1 em ~4 000 requisições em algumas rodadas, sem resposta HTTP e sem erro nos logs das instâncias (provavelmente uma conexão keep-alive fechada pelo servidor no momento do reuso). O script agora registra a mensagem. Um provedor reenviaria com a mesma chave, sem risco de efeito duplicado.
 
 ## O que eu faria com mais tempo

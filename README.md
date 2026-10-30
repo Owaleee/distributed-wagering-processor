@@ -79,13 +79,19 @@ Com PostgreSQL e MiniStack no ar (`docker compose up -d postgres ministack`):
 
 | Comando | O que roda |
 |---|---|
-| `bun run test:unit` | domínio (Money, regras, ledger, idempotência), formato de log e filtro de erros HTTP — sem banco |
-| `bun run test:integration` | API, schema e constraints, atomicidade, consumidor SQS (inbox, retry, DLQ, SIGTERM, crash entre commit e ack com processo real), outbox, pendências e falhas de infraestrutura (lock, pool, banco fora) |
-| `bun run test:concurrency` | 100/80/80, 50 cópias em paralelo, hot wallet, 3 processos reais com SIGKILL sob carga HTTP e SQS |
+| `bun run test:unit` | domínio (Money, regras, ledger, idempotência), formato de log, filtro de erros HTTP e classificação de erros do banco — sem banco |
+| `bun run test:integration` | API, schema e constraints, atomicidade, consumidor SQS (inbox, retry, DLQ, SIGTERM, crash entre commit e ack com processo real), outbox, pendências, falhas de infraestrutura (lock, pool, banco fora), **teste baseado em modelo** e **entradas hostis** |
+| `bun run test:concurrency` | 100/80/80, 50 cópias em paralelo, hot wallet, 3 processos reais com SIGKILL sob carga HTTP e SQS, e **caos** (HTTP + SQS + duplicatas + fora de ordem + SIGKILL) |
 | `bun test` | tudo |
 | `bun run test:load` | teste de carga contra a stack do compose (ver `LOAD_TEST.md`) |
 
-Os testes de integração e de concorrência usam **PostgreSQL e MiniStack reais**, nunca mocks: cada suíte cria um banco e filas próprios. Toda suíte termina conferindo que saldo == soma do ledger em todas as wallets.
+Os testes de integração e de concorrência usam **PostgreSQL e MiniStack reais**, nunca mocks: cada suíte cria um banco e filas próprios. Toda suíte termina com um **verificador de invariantes** que procura no banco estados impossíveis (saldo negativo, saldo diferente do ledger, corrente do ledger quebrada, transação com lançamento a mais ou a menos, reversão dupla, crédito em dobro, evento faltando na outbox…).
+
+### Como os testes foram validados
+- **Oráculo independente** (`model-based.test.ts`): 1 800 operações aleatórias com seed fixa (válidas, inválidas, replays, conflitos, fora de ordem) comparadas, uma a uma, com as regras reescritas sem importar o domínio. Um portão de cobertura falha se algum código de falha não for exercitado.
+- **Mutação:** 9 bugs injetados de propósito no código (regra do WIN, BET já liquidada, idempotência sem provedor, códigos de saldo trocados, escopo da rodada, saldo do replay, direção do ROLLBACK, valor da reversão, referência pendente); o oráculo pegou todos.
+- **O verificador de invariantes é testado** contra um banco adulterado (`invariant-checker.test.ts`).
+- **Fuzz** (`hostile-input.test.ts`): formatos de dinheiro, campos, chaves de protótipo, headers, corpos, rotas, cursores, 600 corpos aleatórios e mensagens SQS com lixo — nunca 500, nunca efeito no saldo.
 
 ## Configuração
 Todas as variáveis têm padrão para desenvolvimento local; a lista comentada está em [`.env.example`](./.env.example). As principais:
