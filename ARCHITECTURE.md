@@ -2,6 +2,35 @@
 
 > Documento vivo: cada decisão entra aqui no momento em que é tomada, com motivo e trade-off.
 
+## Resumo em uma página
+
+**O sistema em uma frase:** uma carteira de apostas que continua certa quando operações chegam repetidas, fora de ordem, ao mesmo tempo em várias instâncias, ou quando o processo morre no meio, porque **todas as garantias ficam no PostgreSQL**, não na memória da aplicação.
+
+### As 5 ideias centrais (todas exigidas pelo desafio)
+
+| # | Ideia | O que resolve | Detalhe | Prova |
+|---|---|---|---|---|
+| 1 | **Lock por wallet** (`SELECT … FOR UPDATE`) antes de qualquer leitura | duas operações da mesma wallet nunca decidem ao mesmo tempo: sem saldo negativo, sem lost update; wallets diferentes seguem em paralelo | D11 | 100/80/80, 50 cópias em paralelo, 3 instâncias |
+| 2 | **Idempotência no banco**: `(providerId, Idempotency-Key)` única + hash do payload | a mesma operação, venha quantas vezes vier e por onde vier, tem um único efeito; replay devolve o resultado original | D10, D13 | 50 cópias, oráculo |
+| 3 | **Ledger imutável, conferido pelo próprio banco** | todo centavo que entra ou sai tem um lançamento que não pode ser alterado; um trigger impede mudar o saldo sem lançamento | D9, D10, D14 | verificador de invariantes em toda suíte |
+| 4 | **Inbox + Outbox na mesma transação do saldo** | mensagem repetida da fila não é aplicada de novo; evento nunca sai antes do commit e nunca se perde | D17, D18 | crash real entre commit e ack, publishers concorrentes |
+| 5 | **Worker de pendências** para operações fora de ordem | um estorno que chega antes da aposta espera por ela (com backoff) em vez de ser perdido | D19 | REFUND antes da BET, fora de ordem entre instâncias |
+
+Com essas cinco, dá para entender o sistema inteiro: o caminho de uma operação é **travar a wallet → conferir a chave → aplicar a regra → gravar transação, saldo, ledger e eventos num único COMMIT → publicar depois**.
+
+### O resto é endurecimento
+
+As demais decisões não são arquitetura extra: são proteções contra falhas reais, e cada uma tem um teste que mostra por que existe.
+
+- **Base e ferramentas** (D1–D5): stack exigida, migrations em lista explícita, MiniStack (o LocalStack passou a exigir conta), compose com um `setup` único.
+- **Modelagem** (D6–D8): domínio puro, `Money` em centavos `bigint`, regras como função pura, testáveis sem banco.
+- **Contrato com o provedor** (D13, D15): cada situação com um status HTTP próprio, para o provedor saber se pode reenviar; autenticação como ponto de extensão documentado.
+- **Falhas de infraestrutura** (D16): timeouts de lock e de conexão viram 503 seguro de reenviar. Inclui duas correções achadas pelos testes: um vazamento de conexão numa dependência (kysely) e um byte nulo que respondia 503 em vez de 400.
+- **Operação** (D12, D20, D21): Unit of Work, várias instâncias sem coordenação, logs JSON, métricas e health checks.
+
+### Como ler este documento
+Cada decisão (D1–D21) traz o que foi decidido, por quê, o trade-off e o teste que a prova. Depois delas vêm a máquina de estados, os códigos de falha, as interpretações adotadas onde o desafio era ambíguo, as limitações conhecidas e a revisão contra as falhas eliminatórias.
+
 ## Visão geral
 
 Uma única aplicação NestJS (monólito modular). A mesma imagem roda em três ou mais instâncias. Cada instância cumpre quatro papéis: API HTTP, consumidor SQS, publicador da outbox e worker de transações `PENDING_REFERENCE`.
