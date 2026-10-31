@@ -1,4 +1,5 @@
 import type { Socket, TCPSocketListener } from "bun";
+import { freePortRange } from "./ports";
 
 export interface TcpProxy {
   readonly port: number;
@@ -24,7 +25,8 @@ interface Pair {
 /** Proxy TCP mínimo para simular indisponibilidade do PostgreSQL nos testes. */
 export function startTcpProxy(target: { hostname: string; port: number }): TcpProxy {
   let listener: TCPSocketListener<Pair> | undefined;
-  let port = 0;
+  // A porta é reaberta depois da queda simulada: precisa ficar fora da faixa de portas de saída (ver `ports.ts`).
+  let port = freePortRange(1);
   const clients = new Set<Socket<Pair>>();
   const upstreams = new Set<Socket<Pair>>();
   let down = false;

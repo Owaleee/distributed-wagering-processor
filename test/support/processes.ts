@@ -3,6 +3,7 @@ import { loadConfig } from "../../src/infrastructure/config";
 import { ensureQueues } from "../../src/infrastructure/messaging/queue-setup";
 import { createSqsClient } from "../../src/infrastructure/messaging/sqs-client";
 import { testQueueNames } from "./app";
+import { freePortRange } from "./ports";
 
 /**
  * Sobe instâncias REAIS da aplicação como processos separados do sistema operacional
@@ -56,7 +57,8 @@ export async function startCluster(databaseUrl: string, size = 3, extraEnv: Reco
   };
   await ensureQueues(createSqsClient(setupConfig), setupConfig);
 
-  const basePort = 20_000 + Math.floor(Math.random() * 20_000);
+  // Fora da faixa de portas de saída do sistema: ver `ports.ts` (o reinício reabre a mesma porta).
+  const basePort = freePortRange(size);
   const instances: Instance[] = [];
   for (let i = 0; i < size; i++) {
     const port = basePort + i;
